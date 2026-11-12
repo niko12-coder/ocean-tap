@@ -1,0 +1,16 @@
+{
+  "name": "Ocean Tap",
+  "short_name": "Ocean Tap",
+  "description": "海の中を眺めて、タップで干渉する癒やしのゲーム",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#04132e",
+  "theme_color": "#04132e",
+  "lang": "ja",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

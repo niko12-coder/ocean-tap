@@ -1,0 +1,2198 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Ocean Tap</title>
+
+<!-- ====== スマホ表示まわり ======
+     ピンチ拡大を禁止し、ノッチの裏まで画面いっぱいに使う（viewport-fit=cover） -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+
+<!-- ホーム画面に追加したとき、Safari の枠なしの全画面で起動する -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ocean Tap">
+<meta name="theme-color" content="#04132e">
+<meta name="format-detection" content="telephone=no">
+
+<!-- ホーム画面アイコン（tools/make-icons.ps1 で作り直せる） -->
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+
+<style>
+  /* 画面全体を固定して、スクロール・選択・長押しメニュー・ダブルタップ拡大をすべて無効にする */
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #04132e;          /* 読み込み中や余白の色。海の底の色に合わせる */
+    overscroll-behavior: none;
+  }
+  body {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    width: 100%;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;  /* iOS の長押しメニューを出さない */
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+  }
+
+  /* 最初だけ出る操作のヒント。触ると消える */
+  #hint {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 36px);
+    display: flex;
+    justify-content: center;
+    gap: 18px;
+    color: rgba(255, 255, 255, 0.8);
+    font: 13px/1.4 -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif;
+    letter-spacing: 0.08em;
+    text-shadow: 0 1px 8px rgba(0, 30, 70, 0.7);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 1.4s ease;
+    z-index: 5;
+  }
+  #hint.show { opacity: 1; }
+
+  /* ====== 設定パネル ======
+     歯車ボタン(#gear)・外側の薄い幕(#scrim)・下から出るパネル(#panel)。
+     canvas とは別の要素なので、ここでの操作はゲーム側（波紋・泡・エサ）には届かない */
+  #gear {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 10px);
+    right: calc(env(safe-area-inset-right, 0px) + 10px);
+    width: 44px; height: 44px;
+    padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(8, 30, 62, 0.38);
+    color: rgba(255, 255, 255, 0.9);
+    z-index: 30;
+    cursor: pointer;
+    touch-action: manipulation;
+    transition: transform 0.35s ease, background 0.2s;
+  }
+  #gear.open { transform: rotate(60deg); background: rgba(8, 30, 62, 0.75); }
+  #gear svg { width: 24px; height: 24px; fill: none; stroke: currentColor; }
+
+  #scrim {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 20;
+    background: rgba(0, 12, 32, 0.12);
+    opacity: 0;
+    pointer-events: none;
+    cursor: pointer;
+    transition: opacity 0.25s;
+  }
+  #scrim.open { opacity: 1; pointer-events: auto; }
+
+  #panel {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    margin: 0 auto;
+    max-width: 560px;
+    box-sizing: border-box;
+    z-index: 25;
+    display: flex; flex-direction: column;
+    max-height: 80vh;
+    max-height: min(80vh, 600px);
+    padding: 8px 18px calc(env(safe-area-inset-bottom, 0px) + 14px);
+    background: rgba(6, 26, 56, 0.94);
+    color: #fff;
+    border-radius: 20px 20px 0 0;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-bottom: none;
+    box-shadow: 0 -8px 30px rgba(0, 10, 30, 0.4);
+    font: 15px/1.4 -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif;
+    touch-action: pan-y;
+    transform: translateY(105%);
+    visibility: hidden;
+    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.3s;
+  }
+  #panel.open {
+    transform: none;
+    visibility: visible;
+    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s;
+  }
+  /* 上のバー（つまみ）。見た目は細いバーだが、つかめる範囲はパネル上部の幅いっぱい・高さ 36px。
+     下へスワイプするとパネルが閉じる（動きは JavaScript の「グラブ」の項） */
+  #panel .grab {
+    flex: none;
+    height: 36px; margin: -8px -18px 0;
+    display: flex; align-items: center; justify-content: center;
+    cursor: grab;
+    touch-action: none;           /* この上の縦の動きは、ブラウザのスクロールではなくパネルを下げる操作にする */
+  }
+  #panel .grab::before { content: ""; width: 40px; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.35); }
+  #panel.dragging { transition: none; }
+
+  /* パネルの中身。長いときはここだけスクロールする */
+  #body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain; }
+
+  /* 詳細設定の開閉ボタン */
+  .more {
+    display: flex; align-items: center; justify-content: space-between;
+    width: 100%; height: 48px; margin-top: 8px; padding: 0 14px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.07);
+    color: #fff; font: inherit; font-weight: 600;
+    cursor: pointer; touch-action: manipulation;
+  }
+  .more::after { content: ""; width: 9px; height: 9px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: translateY(-2px) rotate(45deg); transition: transform 0.25s; }
+  .more[aria-expanded="true"]::after { transform: translateY(2px) rotate(-135deg); }
+  #adv[hidden] { display: none; }
+
+  /* タブ */
+  #tabs { display: flex; gap: 6px; padding: 5px; margin: 4px 0; background: rgba(255, 255, 255, 0.08); border-radius: 13px; }
+  .tab {
+    flex: 1; height: 44px;
+    border: 0; border-radius: 9px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.72);
+    font: inherit; font-weight: 600;
+    cursor: pointer; touch-action: manipulation;
+  }
+  .tab.on { background: rgba(255, 255, 255, 0.2); color: #fff; }
+
+  /* 3つのタブの中身は同じマスに重ねて、いちばん高いものに高さを合わせる（タブを替えても高さが変わらない） */
+  #panes { display: grid; }
+  .pane { grid-area: 1 / 1; visibility: hidden; }
+  .pane.on { visibility: visible; }
+
+  .row { padding: 8px 0 2px; }
+  .head { display: flex; justify-content: space-between; align-items: baseline; font-size: 14px; }
+  .val { color: #8fdcff; font-variant-numeric: tabular-nums; }
+
+  /* スライダー：つまみ 30px、押せる高さ 44px */
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    display: block; width: 100%; height: 44px; margin: 0;
+    background: transparent;
+    touch-action: pan-y;          /* 横の動きはスライダー、縦の動きはパネルのスクロール */
+    --p: 50%;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 6px; border-radius: 3px;
+    background: linear-gradient(to right, #7fd8ff var(--p), rgba(255, 255, 255, 0.22) var(--p));
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 30px; height: 30px; margin-top: -12px;
+    border-radius: 50%; border: 0;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+  input[type=range]::-moz-range-track {
+    height: 6px; border-radius: 3px;
+    background: linear-gradient(to right, #7fd8ff var(--p), rgba(255, 255, 255, 0.22) var(--p));
+  }
+  input[type=range]::-moz-range-thumb { width: 30px; height: 30px; border-radius: 50%; border: 0; background: #fff; }
+
+  /* テーマ選択 */
+  .chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 6px 0 4px; }
+  .chip {
+    height: 50px;
+    border-radius: 12px;
+    border: 2px solid transparent;
+    color: #fff;
+    font: inherit; font-weight: 600;
+    text-shadow: 0 1px 4px rgba(0, 20, 50, 0.7);
+    cursor: pointer; touch-action: manipulation;
+  }
+  .chip.on { border-color: #fff; }
+
+  /* ON/OFF スイッチ */
+  .switchrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; }
+  .sw {
+    position: relative; flex: none;
+    width: 56px; height: 34px; padding: 0;
+    border: 0; border-radius: 17px;
+    background: rgba(255, 255, 255, 0.25);
+    cursor: pointer; touch-action: manipulation;
+    transition: background 0.2s;
+  }
+  .sw::after {
+    content: ""; position: absolute; top: 3px; left: 3px;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+    transition: transform 0.2s;
+  }
+  .sw[aria-checked="true"] { background: #4cc9f0; }
+  .sw[aria-checked="true"]::after { transform: translateX(22px); }
+
+  .reset {
+    width: 100%; height: 48px; margin-top: 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: transparent; color: #fff;
+    font: inherit; cursor: pointer; touch-action: manipulation;
+  }
+</style>
+</head>
+<body>
+<canvas id="sea"></canvas>
+<div id="hint"><span>タップ：波紋</span><span>長押し：エサ</span><span>なぞる：泡</span></div>
+
+<!-- 設定パネル（中身のタブ・スライダーは、下の JavaScript の「SCHEMA」から作られる） -->
+<div id="ui">
+  <button id="gear" type="button" aria-label="設定" aria-expanded="false">
+    <!-- 歯車：点線の太い輪（歯）＋輪（本体）＋中心の輪 -->
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.4" stroke-width="3" stroke-dasharray="3.3 3.3"/>
+      <circle cx="12" cy="12" r="6.4" stroke-width="2.2"/>
+      <circle cx="12" cy="12" r="2.4" stroke-width="2"/>
+    </svg>
+  </button>
+  <div id="scrim"></div>
+  <section id="panel" role="dialog" aria-label="設定" aria-hidden="true">
+    <div class="grab" id="grab" aria-hidden="true"></div>
+    <div id="body">
+      <!-- 基本：魚の数とテーマ -->
+      <div id="basic"></div>
+      <!-- 詳細設定：開くと、タブと「初期値に戻す」が出る -->
+      <button id="more" class="more" type="button" aria-expanded="false" aria-controls="adv">詳細設定</button>
+      <div id="adv" hidden>
+        <div id="tabs" role="tablist"></div>
+        <div id="panes"></div>
+        <button id="reset" class="reset" type="button">初期値に戻す</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* =====================================================================
+   1. 設定  ―  まずここをいじると雰囲気や重さを変えられる
+   （魚の数・泡の上限などは、画面右上の歯車パネルからも変えられる。
+     ここの値は「初期値」で、パネルで変えた値は localStorage に保存される）
+   ===================================================================== */
+const CONFIG = {
+  // ---- 重さに関わる定数（カクつくなら下げる） ----
+  FISH_COUNT: 100,       // 魚の数の初期値。重いなら 30〜60 に（自動調整が働くと、重い端末では自然に減る）
+  THEME: 'deep',         // テーマの初期値（THEMES のキー: standard / shallow / deep / sunset / reef）
+  BIG_FISH_COUNT: 2,     // 奥をゆっくり泳ぐ大きな魚の数
+  MIN_FISH_COUNT: 24,    // 自動調整（下記）で減らしても、これ未満にはしない
+  AUTO_QUALITY: true,    // true: 重い（目標の約75%未満のfps）と、描画の細かさ → 光の筋 → 魚の数 の順に軽くする
+  MAX_DPR: 2,            // 描画の細かさの上限。3 にするとさらに高精細だが重くなる
+  AUTO_DPR: 1.5,         // 自動調整で、最初に描画の細かさをここまで下げる（輪郭が少し柔らかくなるだけで、描く量は約4割減る）
+  CAP_RETRY_SEC: 30,     // 30fps前後で「上限で止まっている」と判断したあと、次に試すまでの秒数（下の monitor() を参照）
+  POWER_SAVE_FPS: 30,    // パネルの「省電力」をONにしたときのコマ数（fps）
+  RAY_SCALE: 0.25,       // 光の筋を描く裏キャンバスの細かさ（画面の何倍か）。光の筋はぼやけた絵なので、粗く描いて引き伸ばしても見た目はほぼ同じ
+  BUBBLE_LIMIT: 400,   // 泡の最大数の初期値。上限に達したら、古い泡から消して新しい泡を出し続ける
+  BUBBLE_LIMIT_MAX: 400, // パネルで上げられる泡の最大数
+  PARTICLE_COUNT: 70,    // 漂う小さな粒の数の初期値
+  RAY_COUNT: 6,          // 光の筋の本数
+  SEAWEED_FAR: 7,        // 奥の海藻の本数
+  SEAWEED_NEAR: 4,       // 手前の海藻の本数
+  MAX_FOOD: 300,         // エサの最大数。上限に達したら、古いエサから作り直して使い続ける（泡と同じ。入れ物は使い回す）
+  THEME_FADE_SEC: 1.6,   // テーマ切り替えで、色が移り変わる秒数
+
+  // ---- 魚の群れの動き（ボイド） ----
+  PERCEPTION: 100,       // 仲間を見つける距離
+  SEPARATION_K: 1.7,     // 分離：魚の体長の何倍まで近づくと離れるか
+  SEPARATION_W: 240,     // 分離の強さ
+  ALIGNMENT_W: 1.6,      // 整列の強さ（仲間と向きをそろえる）
+  COHESION_W: 0.28,      // 結合の強さ（仲間の中心へ寄る）
+  SCHOOL_PULL: 0.05,     // 群れ全体の重心へ戻る弱い力
+  TARGET_W: 18,          // 群れが目標点へ向かう力（群れ全体がゆっくり泳ぎ回る）
+  WANDER_W: 16,          // 気まぐれに曲がる力
+  BOUND_K: 5,            // 画面の端で押し戻す力
+  MAX_ACCEL: 120,        // 曲がる力の上限
+  SIDE_MARGIN: 46,       // 左右の端からの余白
+  TOP_MARGIN: 70,        // 水面側の余白
+  BOTTOM_MARGIN: 110,    // 海底側の余白
+
+  // ---- タップで驚く ----
+  SCARE_RADIUS: 240,     // 波紋で驚く距離
+  FLEE_SPEED: 250,       // 逃げるときの最高速度
+  PANIC_TIME: 1.9,       // 驚きが収まるまでの秒数
+  WAVE_SPEED: 520,       // 波が伝わる速さ（遠い魚ほど遅れて驚く）
+
+  // ---- 長押しでエサ ----
+  LONG_PRESS_MS: 200,    // 長押しと判定する時間（ms）。これより長く押すと、波紋ではなくエサになる
+  FEED_RATE_START: 20,   // 長押しし始めに落とすエサの数（個/秒）。パネルの「エサの量」を掛ける
+  FEED_RATE_END: 30,     // 長押しを続けたとき、少しずつ増えて行き着く数（個/秒）
+  FEED_RAMP_SEC: 5,      // 増え始めてから FEED_RATE_END に届くまでの秒数
+  FOOD_SPREAD_R: 16,   // エサが散らばる範囲の半径（px。指の位置を中心に、この円の中へランダムに）
+  FOOD_SIZE: [1.0, 2.4], // エサ1粒の半径（px）の範囲。小さい粒が多く、大きい粒は少し。パネルの「エサの大きさ」を掛ける
+  FOOD_COLORS: ['#7d4f26', '#94602b', '#a87333', '#bb8736', '#c99a3e', '#d8a448', '#e2923c', '#e8812f'], // 茶色〜黄土色〜オレンジ。粒ごとにどれかが当たる
+  FOOD_LIFE: 28,         // エサが消えるまでの秒数
+  FOOD_ATTRACT_R: 280,   // 魚がエサに気づく距離
+  FOOD_W: 85,            // エサへ向かう力（小さいほどゆっくり集まる）
+
+  // ---- 指でなぞる ----
+  MOVE_THRESHOLD: 18,    // これ以上動いたら「なぞる」と判定（px）。長押しの判定を待つ間の指のぶれは、これまで許す
+  TRAIL_SPACING: 13,     // 軌跡に泡を出す間隔（px）。パネルの「なぞった時の泡の量」で割る
+  TOUCH_PUSH_R: 55,      // なぞる指に魚が避ける距離
+  TOUCH_PUSH_W: 260,     // 避ける力
+
+  // ---- 泡と魚（なぞった泡・タップの泡だけ。自動で浮かぶ泡と、魚が食べたときの泡は関係しない） ----
+  BUBBLE_HIT_R: 0.35,    // 魚の当たりの半径（体長の何倍か）。泡がここに触れると、弾ける泡なら弾けて、魚がビクッとする
+  BUBBLE_POP_CHANCE: 0.5, // 魚に触れたら弾ける泡の割合（泡ごとに、出たときに決まる）。弾けない泡は、触れた魚を強く押し返す
+  BUBBLE_FLINCH: 0.4,    // ビクッとして泡から離れる勢い（FLEE_SPEED の何倍か。パネルの「逃げる強さ」も掛かる）
+  BUBBLE_PANIC: 0.35,    // ビクッとしたときの驚き度（0〜1。タップの波紋で驚くより弱く、すぐ収まる）
+  BUBBLE_WALL_R: 26,     // 泡の縁からこの距離（pt）に入ると、魚は泡を壁のように避ける
+  BUBBLE_WALL_W: 320,    // 泡の壁を避ける力
+  BUBBLE_WALL_MAX: 1,    // 泡の壁の力の上限（MAX_ACCEL による曲がる力の上限の何倍か）。ほかの力（群れ・目標点・エサ）とは別にかけるので、群れの動きに負けにくい。1.2 以上にすると、エサがあっても壁をほぼ越えなくなる
+  POP_LIFE: 0.3,         // 泡が弾けた「パチン」の表示秒数
+  POP_MAX: 80,           // 同時に出す「パチン」の最大数（多いときは古いものから消す）
+
+  // ---- タップの衝撃で泡が弾ける（自動で浮かぶ泡も含む。タップで出る泡は除く） ----
+  SHOCK_R: 120,          // 弾ける範囲（pt）。泡は、波紋の輪が届いた瞬間に弾ける
+  SHOCK_SURE_R: 30,      // この内側の泡は必ず弾ける
+  SHOCK_NEAR_CHANCE: 0.5, // SHOCK_SURE_R のすぐ外側で弾ける割合。そこから外側ほど下がり、SHOCK_R で SHOCK_EDGE_CHANCE になる
+  SHOCK_EDGE_CHANCE: 0.1,
+
+  // ---- 雰囲気 ----
+  AMBIENT_BUBBLE_RATE: 1.5, // 何もしなくても下から浮かぶ泡（個/秒）
+};
+
+// URL に ?fish=30 を付けると魚の数を一時的に変えられる（端末ごとの調整用）。
+// ?fps を付けると左上に fps が出る。
+const params = new URLSearchParams(location.search);
+const SHOW_FPS = params.has('fps');
+
+/* 魚の群れの定義。色・大きさ・泳ぐ深さ（z: 0=奥 1=手前）・割合を変えられる */
+const SCHOOL_DEFS = [
+  { hue: 22,  sat: 92, lit: 58, z: 0.88, size: [20, 28], speed: [44, 58], share: 0.20 }, // オレンジ
+  { hue: 48,  sat: 92, lit: 60, z: 0.72, size: [17, 24], speed: [40, 54], share: 0.20 }, // イエロー
+  { hue: 172, sat: 72, lit: 52, z: 0.80, size: [19, 26], speed: [42, 56], share: 0.20 }, // ターコイズ
+  { hue: 332, sat: 78, lit: 68, z: 0.62, size: [16, 22], speed: [38, 50], share: 0.15 }, // ピンク
+  { hue: 205, sat: 50, lit: 78, z: 0.50, size: [11, 16], speed: [48, 64], share: 0.25 }, // 銀青（小さく奥）
+];
+// 奥をゆっくり泳ぐ大きな影の魚
+const BIG_DEF = { hue: 212, sat: 38, lit: 40, z: 0.30, size: [88, 112], speed: [14, 20] };
+
+/* ---- 背景テーマ ----
+   新しいテーマは、ここに1つ足すだけで、パネルの選択肢にも出る。
+   「作るときだけ使う色」は文字列、「切り替え中に少しずつ変わる色」は数値の配列 [r,g,b(,a)]。
+     sea        水の色（上→下の5色）
+     glowTop    水面の明るさ
+     vignette   周辺の暗がりの濃さ
+     farDune / nearDune   奥・手前の砂丘の色 [上, 下]
+     rockFar / rockNear   奥・手前の岩の色
+     coral      サンゴの色（4色）   corals  サンゴの数 [奥, 手前]
+     fog        奥の魚にかぶせる霞みの色
+     particle   漂う粒の色   particleAlpha  粒の濃さ   glow  粒のほのかな光（0〜1）
+     rayMul     光の筋の強さ   rayWarm  光の筋の色（0=白っぽい 1=暖色）
+     weedFar / weedNear   奥・手前の海藻の色 */
+const THEMES = {
+  standard: {
+    label: '標準',
+    sea: ['#49b4d8', '#2686bd', '#12579a', '#0a3470', '#04132e'],
+    glowTop: 'rgba(190,240,255,0.45)', vignette: 0.42,
+    farDune: ['rgba(26,78,108,0.85)', 'rgba(8,30,58,0.95)'],
+    nearDune: ['rgba(14,52,80,0.95)', 'rgba(4,17,38,1)'],
+    rockFar: '#1d4f70', rockNear: '#0b2a45',
+    coral: ['#27677a', '#2d5f86', '#3a5a8c', '#25707a'], corals: [2, 2],
+    fog: [8, 70, 120, 0.20],
+    particle: [210, 240, 255], particleAlpha: 1, glow: 0,
+    rayMul: 1, rayWarm: 0,
+    weedFar: [16, 84, 92, 0.5], weedNear: [8, 44, 58, 0.8],
+  },
+  shallow: {
+    label: '浅瀬',
+    sea: ['#a4ecf2', '#5fd0e2', '#34a8d4', '#2189c0', '#17669f'],
+    glowTop: 'rgba(255,255,240,0.6)', vignette: 0.16,
+    farDune: ['rgba(226,208,160,0.7)', 'rgba(90,150,170,0.9)'],
+    nearDune: ['rgba(206,186,136,0.95)', 'rgba(70,118,140,1)'],
+    rockFar: '#5f8a96', rockNear: '#3d6574',
+    coral: ['#e98a6e', '#f2b36b', '#d86f93', '#7fc7a3'], corals: [3, 3],
+    fog: [70, 170, 205, 0.16],
+    particle: [255, 255, 255], particleAlpha: 0.9, glow: 0,
+    rayMul: 1.7, rayWarm: 0,
+    weedFar: [60, 150, 120, 0.5], weedNear: [28, 100, 84, 0.85],
+  },
+  deep: {
+    label: '深海',
+    sea: ['#0d4170', '#09305a', '#06213f', '#03132b', '#010813'],
+    glowTop: 'rgba(80,170,220,0.18)', vignette: 0.55,
+    farDune: ['rgba(14,46,78,0.85)', 'rgba(3,14,30,0.95)'],
+    nearDune: ['rgba(6,24,46,0.95)', 'rgba(1,6,14,1)'],
+    rockFar: '#0c2a46', rockNear: '#040f1d',
+    coral: ['#12485e', '#18405f', '#2a3a6e', '#0f4f58'], corals: [1, 2],
+    fog: [2, 20, 50, 0.28],
+    particle: [120, 255, 235], particleAlpha: 1, glow: 1,
+    rayMul: 0.3, rayWarm: 0,
+    weedFar: [8, 50, 70, 0.5], weedNear: [3, 24, 36, 0.9],
+  },
+  sunset: {
+    label: '夕方の海',
+    sea: ['#f7b985', '#e58a88', '#9a6aa0', '#3e4f94', '#121f50'],
+    glowTop: 'rgba(255,214,160,0.55)', vignette: 0.4,
+    farDune: ['rgba(120,84,130,0.85)', 'rgba(26,28,70,0.95)'],
+    nearDune: ['rgba(70,50,100,0.95)', 'rgba(14,16,46,1)'],
+    rockFar: '#4b3f78', rockNear: '#1c1c48',
+    coral: ['#c85f78', '#e0875c', '#9b5fa0', '#d9a35a'], corals: [2, 3],
+    fog: [90, 50, 120, 0.2],
+    particle: [255, 226, 190], particleAlpha: 1, glow: 0.25,
+    rayMul: 1.4, rayWarm: 1,
+    weedFar: [90, 80, 110, 0.5], weedNear: [32, 30, 70, 0.85],
+  },
+  reef: {
+    label: 'サンゴ礁',
+    sea: ['#6fe6ea', '#31c3d8', '#1a9ac6', '#0e72a8', '#084a84'],
+    glowTop: 'rgba(220,255,255,0.5)', vignette: 0.22,
+    farDune: ['rgba(220,206,168,0.7)', 'rgba(40,120,150,0.9)'],
+    nearDune: ['rgba(210,194,150,0.95)', 'rgba(34,100,130,1)'],
+    rockFar: '#4f8a98', rockNear: '#2d6071',
+    coral: ['#ff7a6b', '#ffb347', '#e85d9a', '#9a6cf0'], corals: [7, 7],
+    fog: [20, 120, 170, 0.14],
+    particle: [255, 255, 255], particleAlpha: 0.85, glow: 0,
+    rayMul: 1.5, rayWarm: 0,
+    weedFar: [40, 170, 130, 0.5], weedNear: [16, 110, 86, 0.85],
+  },
+};
+
+/* ---- 設定パネルの項目 ----
+   ここを書き換えると、パネルのタブ・スライダー・保存・初期値がまとめて変わる。
+     range  … スライダー（min / max / step / def=初期値 / fmt=表示）
+     theme  … テーマ選択ボタン    toggle … ON/OFFスイッチ
+   basic: true の項目は、パネルを開いてすぐ見える場所（基本）に出る。
+   それ以外は「詳細設定」を開いた中に、tab の名前のタブで並ぶ。 */
+const times = (v) => '×' + v.toFixed(2);
+const SCHEMA = [
+  { tab: '魚', items: [
+    { key: 'fishCount',  label: '魚の数',               type: 'range', min: 0,   max: 120, step: 1,    def: CONFIG.FISH_COUNT, fmt: (v) => v + '匹' + (quality.fishCap < v ? `（いまは${quality.fishCap}匹）` : ''), basic: true }, // 自動調整で減らしているときは、実際の数も出す
+    { key: 'speed',      label: '泳ぐ速さ',             type: 'range', min: 0.4, max: 2,   step: 0.05, def: 1, fmt: times },
+    { key: 'flee',       label: '逃げる強さ',           type: 'range', min: 0.3, max: 2,   step: 0.05, def: 1, fmt: times },
+    { key: 'foodAttract', label: 'エサへの集まりやすさ', type: 'range', min: 0.2, max: 2.5, step: 0.05, def: 1, fmt: times },
+    { key: 'foodAmount',  label: 'エサの量',             type: 'range', min: 0.2, max: 3,   step: 0.05, def: 1.8, fmt: times },
+    { key: 'foodSize',    label: 'エサの大きさ',         type: 'range', min: 0.5, max: 2.5, step: 0.05, def: 1.1, fmt: times },
+  ] },
+  { tab: '泡・粒子', items: [
+    { key: 'trailAmount',   label: 'なぞった時の泡の量', type: 'range', min: 0,  max: 3,   step: 0.1, def: 1, fmt: (v) => (v === 0 ? 'なし' : '×' + v.toFixed(1)) },
+    { key: 'bubbleLimit',   label: '泡の上限数',         type: 'range', min: 40, max: CONFIG.BUBBLE_LIMIT_MAX, step: 10, def: CONFIG.BUBBLE_LIMIT, fmt: (v) => v + '個' },
+    { key: 'particleCount', label: '漂う粒子の数',       type: 'range', min: 0,  max: 250, step: 5,   def: CONFIG.PARTICLE_COUNT, fmt: (v) => v + '個' },
+    { key: 'rayStrength',   label: '光の筋の強さ',       type: 'range', min: 0,  max: 2.5, step: 0.1, def: 1, fmt: (v) => (v === 0 ? 'なし' : '×' + v.toFixed(1)) },
+  ] },
+  { tab: '背景', items: [
+    { key: 'theme', label: 'テーマ',                       type: 'theme',  def: CONFIG.THEME, basic: true },
+    { key: 'decor', label: '海底の飾り（岩・海藻・サンゴ）', type: 'toggle', def: true },
+    // basic: true なので、タブではなく基本（魚の数・テーマの下）に出る
+    { key: 'powerSave', label: '省電力（30fps）', type: 'toggle', def: false, basic: true },
+  ] },
+];
+
+
+/* =====================================================================
+   2. 道具（乱数など）と、保存される設定
+   ===================================================================== */
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+// 毎回同じ並びになる乱数（海底の岩やサンゴの配置を、作り直しても変えないために使う）
+function mulberry32(a) {
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const hexRgb = (h) => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+// 色 h に、色 to（[r,g,b]）を t の割合で混ぜる
+const mixHex = (h, to, t) => {
+  const a = hexRgb(h);
+  return `rgb(${Math.round(a[0] + (to[0] - a[0]) * t)},${Math.round(a[1] + (to[1] - a[1]) * t)},${Math.round(a[2] + (to[2] - a[2]) * t)})`;
+};
+const WHITE = [255, 255, 255], BLACK = [0, 0, 0];
+
+/* ---- 設定の保存と復元（localStorage）----
+   settings が「いまの設定」。保存できない環境（プライベートブラウズなど）でも動くよう try/catch で囲む */
+const SETTINGS_KEY = 'ocean-tap:settings:v1';
+/* 保存データのバージョン。保存データには _v としてこの番号が入る。
+   初期値（CONFIG や SCHEMA の def）を変えたときは、この番号を 1 つ上げる。
+   すると、古い番号（番号なしも含む）で保存されたデータは捨てられ、新しい初期値で始まる */
+const SETTINGS_VERSION = 3;
+
+function defaultSettings() {
+  const s = {};
+  for (const g of SCHEMA) for (const it of g.items) s[it.key] = it.def;
+  return s;
+}
+function loadSettings() {
+  const s = defaultSettings();
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw) {
+      const o = JSON.parse(raw);
+      if (!o || o._v !== SETTINGS_VERSION) {            // 古いバージョンの保存データ：使わずに消す（新しい初期値で始まる）
+        localStorage.removeItem(SETTINGS_KEY);
+        return s;
+      }
+      for (const g of SCHEMA) for (const it of g.items) {
+        const v = o[it.key];
+        if (it.type === 'range' && typeof v === 'number' && isFinite(v)) s[it.key] = clamp(v, it.min, it.max);
+        else if (it.type === 'theme' && typeof v === 'string' && THEMES[v]) s[it.key] = v;
+        else if (it.type === 'toggle' && typeof v === 'boolean') s[it.key] = v;
+      }
+    }
+  } catch (_) { /* 読めなければ初期値のまま */ }
+  return s;
+}
+const settings = loadSettings();
+if (params.has('fish')) {                     // ?fish=30 は保存済みの設定より優先する（この回だけ）
+  const n = parseInt(params.get('fish'), 10);
+  if (!isNaN(n)) settings.fishCount = clamp(n, 0, 120);
+}
+
+let saveTimer = 0;
+function saveSettings() { clearTimeout(saveTimer); saveTimer = setTimeout(flushSettings, 300); } // つまみを動かし続けている間は、まとめて保存
+function flushSettings() {
+  clearTimeout(saveTimer);
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(Object.assign({ _v: SETTINGS_VERSION }, settings))); } catch (_) {}
+}
+window.addEventListener('pagehide', flushSettings);
+
+
+/* =====================================================================
+   3. キャンバスと画面サイズ
+   view.U は「画面の大きさに合わせた倍率」。iPhone（幅390）で 1。
+   大きさや距離は基本これを掛けて、どの画面でも同じ見た目にする。
+   ===================================================================== */
+const canvas = document.getElementById('sea');
+const ctx = canvas.getContext('2d', { alpha: false }); // alpha:false は描画が少し速くなる
+const view = { W: 0, H: 0, dpr: 1, U: 1 };
+let simT = 0; // アニメーション用の経過秒
+let worldReady = false; // 魚などを作り終えたか
+/* 自動品質調整で下げたもの（この回だけ。保存はしない）
+   dprCap: 描画の細かさの上限   raysOff: 光の筋を描かない   fishCap: 魚の数の上限（パネルの「魚の数」はそのまま）
+   probe: 30fps前後のとき試しに下げた段（次の計測で効いたか確かめる）   cappedAt: 「上限で止まっている」と判断した時刻 */
+const quality = { dprCap: CONFIG.MAX_DPR, raysOff: false, fishCap: Infinity, probe: null, cappedAt: -1e9 };
+const fishTarget = () => Math.min(settings.fishCount, quality.fishCap);   // 実際に泳がせる魚の数
+
+function resize() {
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, quality.dprCap);
+  if (!W || !H || (W === view.W && H === view.H && dpr === view.dpr)) return;
+
+  const oldW = view.W, oldH = view.H;
+  view.W = W; view.H = H; view.dpr = dpr;
+  view.U = clamp(Math.min(W, H) / 390, 0.8, 1.8);
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  rayLayer.width = Math.ceil(W * CONFIG.RAY_SCALE);   // 光の筋の裏キャンバス（画面より粗い）
+  rayLayer.height = Math.ceil(H * CONFIG.RAY_SCALE);
+  applyBackdrop(true);   // 背景を新しい画面サイズで作り直す（色の移り変わりは行わない）
+
+  // 最初に有効な画面サイズが取れた時点で、魚などを作る（サイズ0のまま作ると全員が左上に固まる）
+  if (!worldReady) { worldReady = true; initWorld(); return; }
+
+  // 向きが変わったとき、すでにいる物の位置を新しい画面に合わせて移す
+  if (oldW) {
+    const kx = W / oldW, ky = H / oldH;
+    const move = (o) => { o.x *= kx; o.y *= ky; };
+    fishAll.forEach(move); bubbles.forEach(move); particles.forEach(move);
+    food.forEach(move); ripples.forEach(move); pops.forEach(move);
+  }
+}
+
+
+/* =====================================================================
+   4. あらかじめ描いておく絵（毎フレーム描くと重いので、1回だけ作って使い回す）
+   ===================================================================== */
+const mkCanvas = () => document.createElement('canvas');
+const raySprite = mkCanvas();      // 光の筋 1本分（白っぽい）
+const rayWarmSprite = mkCanvas();  // 光の筋 1本分（暖色。夕方の海用）
+const bubbleSprite = mkCanvas();   // 泡 1個分
+const glowSprite = mkCanvas();     // 粒のほのかな光
+const rayLayer = mkCanvas();       // 光の筋を毎フレーム描く裏キャンバス。画面の RAY_SCALE 倍の粗さで描いて、1枚で引き伸ばして重ねる
+const rayCtx = rayLayer.getContext('2d');
+
+/* 光の筋：横はふんわり、縦は上から下へ薄れる */
+function buildRaySprite(c, rgb) {
+  const w = 128, h = 512, col = rgb.join(',');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  const hg = g.createLinearGradient(0, 0, w, 0);
+  hg.addColorStop(0.0, `rgba(${col},0)`);
+  hg.addColorStop(0.2, `rgba(${col},0.25)`);
+  hg.addColorStop(0.5, `rgba(${col},1)`);
+  hg.addColorStop(0.8, `rgba(${col},0.25)`);
+  hg.addColorStop(1.0, `rgba(${col},0)`);
+  g.fillStyle = hg;
+  g.fillRect(0, 0, w, h);
+  g.globalCompositeOperation = 'destination-in'; // 縦方向の透明度を掛け合わせる
+  const vg = g.createLinearGradient(0, 0, 0, h);
+  vg.addColorStop(0, 'rgba(0,0,0,1)');
+  vg.addColorStop(0.55, 'rgba(0,0,0,0.35)');
+  vg.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = vg;
+  g.fillRect(0, 0, w, h);
+}
+
+/* 泡：半透明の玉に、輪郭とハイライト。
+   64px の絵を小さい泡（数px）へ一気に縮めると、細い輪郭線が点線のように途切れる。
+   そこで半分ずつ縮めた 32・16・8px の絵も作っておき、描く大きさに近いものを使う（bubbleMips[0] が 64px） */
+const bubbleMips = [bubbleSprite];
+function buildBubbleSprite() {
+  const s = 64, c = 32, r = 28;
+  bubbleSprite.width = s; bubbleSprite.height = s;
+  const g = bubbleSprite.getContext('2d');
+  const fill = g.createRadialGradient(c - 8, c - 10, 2, c, c, r);
+  fill.addColorStop(0, 'rgba(255,255,255,0.30)');
+  fill.addColorStop(0.7, 'rgba(190,235,255,0.06)');
+  fill.addColorStop(1, 'rgba(200,240,255,0.22)');
+  g.fillStyle = fill;
+  g.beginPath(); g.arc(c, c, r, 0, TAU); g.fill();
+  g.lineWidth = 3;
+  g.strokeStyle = 'rgba(225,248,255,0.8)';
+  g.stroke();
+  g.fillStyle = 'rgba(255,255,255,0.9)';
+  g.beginPath(); g.ellipse(c - 9, c - 11, 7, 4, -0.6, 0, TAU); g.fill();
+  bubbleMips.length = 1;
+  for (let size = s / 2; size >= 8; size /= 2) {   // 1つ前の絵を半分に縮める（半分ずつなら線が途切れない）
+    const m = mkCanvas();
+    m.width = m.height = size;
+    m.getContext('2d').drawImage(bubbleMips[bubbleMips.length - 1], 0, 0, size, size);
+    bubbleMips.push(m);
+  }
+}
+
+/* 粒のほのかな光（深海テーマで粒のまわりに重ねる） */
+function buildGlowSprite() {
+  const s = 64;
+  glowSprite.width = s; glowSprite.height = s;
+  const g = glowSprite.getContext('2d');
+  const grad = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  grad.addColorStop(0, 'rgba(190,255,245,1)');
+  grad.addColorStop(0.25, 'rgba(150,240,235,0.45)');
+  grad.addColorStop(1, 'rgba(120,230,230,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, s, s);
+}
+
+
+/* =====================================================================
+   4b. 背景（テーマ）
+   背景は「水の色＋奥の飾り」（bg）と「手前の飾り」（fg）の2枚の絵として、テーマごとに1回だけ描く。
+   テーマを替えると、新しい絵を裏で描いておいて、古い絵からふわっと重ね替える。
+   光の筋・霞み・海藻・粒の色は、切り替え中に rt の数値を少しずつ動かして変える。
+   ===================================================================== */
+let bgFrom = mkCanvas(), bgTo = mkCanvas();   // 色の移り変わり中の「前の絵」と「次の絵」。ふだんは bgTo だけ描く
+let fgFrom = mkCanvas(), fgTo = mkCanvas();   // 手前の飾り（画面の下側だけの絵）
+let fgH = 0;                                  // 手前の飾りの絵の高さ
+let themeT = 1, themeEase = 1;                // 切り替えの進み具合 0→1（1=完了）
+let rt = null, rtFrom = null, rtTo = null;    // 実行中に使う数値（霞み・粒・光・海藻の色など）。rt が現在値
+let curKey = '';
+
+/* テーマから、切り替え中に補間する数値を取り出す */
+function runtimeOf(t, decor) {
+  return {
+    fogR: t.fog[0], fogG: t.fog[1], fogB: t.fog[2], fogA: t.fog[3],
+    pR: t.particle[0], pG: t.particle[1], pB: t.particle[2], pA: t.particleAlpha, glow: t.glow,
+    rayMul: t.rayMul, rayWarm: t.rayWarm,
+    wfR: t.weedFar[0], wfG: t.weedFar[1], wfB: t.weedFar[2], wfA: t.weedFar[3],
+    wnR: t.weedNear[0], wnG: t.weedNear[1], wnB: t.weedNear[2], wnA: t.weedNear[3],
+    decorA: decor ? 1 : 0,
+  };
+}
+
+/* 設定のテーマ・飾りに、背景を合わせる。instant=true なら色を移り変わらせずに一瞬で替える */
+function applyBackdrop(instant) {
+  if (!view.W) return;
+  const theme = THEMES[settings.theme] || THEMES.standard, decor = settings.decor;
+  const key = settings.theme + (decor ? '+decor' : '');
+  if (!instant && rt && key === curKey) return;
+  curKey = key;
+  const next = runtimeOf(theme, decor);
+
+  if (instant || !rt) {
+    buildBackdrop(theme, decor, bgTo, fgTo);
+    rt = Object.assign({}, next); rtFrom = rtTo = next;
+    themeT = themeEase = 1;
+    releaseOldBackdrop();
+    return;
+  }
+  if (themeT < 1) {
+    // 切り替えの途中でまた替えたとき：いま見えている絵を「前の絵」に焼き込んで、そこから次へ移る
+    blendInto(bgFrom, bgTo, themeEase);
+    blendInto(fgFrom, fgTo, themeEase);
+  } else {
+    [bgFrom, bgTo] = [bgTo, bgFrom];            // いまの絵を「前の絵」にして、次の絵を空いた方へ描く
+    [fgFrom, fgTo] = [fgTo, fgFrom];
+  }
+  rtFrom = Object.assign({}, rt);
+  rtTo = next;
+  buildBackdrop(theme, decor, bgTo, fgTo);
+  themeT = themeEase = 0;
+}
+
+/* 切り替えが終わったら「前の絵」は要らないので、大きさを 0 にしてメモリを返す（画面全体ぶんで数MBある）。
+   次の切り替えでは、この空いた方へ新しい絵を描く（buildBackdrop が大きさを付け直す） */
+function releaseOldBackdrop() {
+  bgFrom.width = bgFrom.height = 0;
+  fgFrom.width = fgFrom.height = 0;
+}
+
+/* dst の絵に src の絵を a の割合で混ぜる（dst = dst*(1-a) + src*a。透明な絵でも正しく混ざる合成方法） */
+function blendInto(dst, src, a) {
+  const g = dst.getContext('2d');
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalCompositeOperation = 'destination-in';
+  g.fillStyle = `rgba(0,0,0,${1 - a})`;
+  g.fillRect(0, 0, dst.width, dst.height);
+  g.globalCompositeOperation = 'lighter';
+  g.globalAlpha = a;
+  g.drawImage(src, 0, 0);
+  g.globalAlpha = 1;
+  g.globalCompositeOperation = 'source-over';
+}
+
+/* テーマ 1 つぶんの背景を描く */
+function buildBackdrop(theme, decor, bgC, fgC) {
+  const { W, H, dpr, U } = view;
+
+  // ---- bg：水の色 → 水面の光 → 奥の飾り → 奥の砂丘 → 周辺の暗がり ----
+  bgC.width = Math.ceil(W * dpr);
+  bgC.height = Math.ceil(H * dpr);
+  const g = bgC.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const sea = g.createLinearGradient(0, 0, 0, H);
+  [0, 0.22, 0.5, 0.78, 1].forEach((p, i) => sea.addColorStop(p, theme.sea[i]));
+  g.fillStyle = sea;
+  g.fillRect(0, 0, W, H);
+
+  const cy = -H * 0.08, glow = g.createRadialGradient(W * 0.5, cy, 0, W * 0.5, cy, H * 0.8);
+  glow.addColorStop(0, theme.glowTop);
+  glow.addColorStop(1, theme.glowTop.replace(/[\d.]+\)$/, '0)'));
+  g.fillStyle = glow;
+  g.fillRect(0, 0, W, H);
+
+  if (decor) drawDecor(g, theme, true);   // 砂丘より先に描くので、根元は砂丘に隠れる
+  drawDune(g, H - 62 * U, 14 * U, 0.6, theme.farDune[0], theme.farDune[1]);
+
+  const vg = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.hypot(W, H) * 0.62);
+  vg.addColorStop(0, 'rgba(0,10,30,0)');
+  vg.addColorStop(1, `rgba(0,10,30,${theme.vignette})`);
+  g.fillStyle = vg;
+  g.fillRect(0, 0, W, H);
+
+  // ---- fg：手前の飾り → 手前の砂丘（画面の下側だけ。魚や泡より手前に重ねる） ----
+  fgH = Math.min(H, Math.round(240 * U));
+  fgC.width = Math.ceil(W * dpr);
+  fgC.height = Math.ceil(fgH * dpr);
+  const f = fgC.getContext('2d');
+  f.setTransform(dpr, 0, 0, dpr, 0, 0);
+  f.translate(0, -(H - fgH));             // 以降は画面全体の座標で描ける
+  if (decor) drawDecor(f, theme, false);
+  drawDune(f, H - 36 * U, 11 * U, 2.1, theme.nearDune[0], theme.nearDune[1]);
+}
+
+function drawDune(g, baseY, amp, phase, topColor, bottomColor) {
+  const { W, H } = view;
+  g.beginPath();
+  g.moveTo(0, H);
+  for (let x = 0; x <= W + 8; x += 8) {
+    const u = x / W * TAU;
+    g.lineTo(x, baseY + Math.sin(u * 1.3 + phase) * amp + Math.sin(u * 3.1 + phase * 2) * amp * 0.3);
+  }
+  g.lineTo(W, H);
+  g.closePath();
+  const grad = g.createLinearGradient(0, baseY - amp, 0, H);
+  grad.addColorStop(0, topColor);
+  grad.addColorStop(1, bottomColor);
+  g.fillStyle = grad;
+  g.fill();
+}
+
+/* 海底の飾り（岩とサンゴ）。far=true は奥（小さく薄く）、false は手前（大きく濃く）。
+   乱数の種を固定してあるので、作り直しても同じ場所に並ぶ */
+function drawDecor(g, theme, far) {
+  const { W, H, U } = view;
+  const rnd = mulberry32(far ? 1337 : 7331);
+  const baseY = (far ? H - 62 * U : H - 36 * U) + 8 * U; // 砂丘に少し埋まる高さ
+  const s = far ? 0.62 : 1;
+  g.save();
+  g.globalAlpha = far ? 0.55 : 1;
+
+  const nRock = far ? 4 : 3;
+  for (let i = 0; i < nRock; i++) {
+    const w = (50 + rnd() * 70) * U * s;
+    const h = Math.min(w * (0.4 + rnd() * 0.35), 70 * U * s);
+    drawRock(g, rnd, rnd() * W, baseY, w, h, far ? theme.rockFar : theme.rockNear);
+  }
+  const nCoral = far ? theme.corals[0] : theme.corals[1];
+  for (let i = 0; i < nCoral; i++) {
+    const x = rnd() * W, type = (rnd() * 4) | 0, color = theme.coral[(rnd() * theme.coral.length) | 0];
+    drawCoral(g, rnd, x, baseY, (0.8 + rnd() * 0.7) * U * s, color, type);
+  }
+  g.restore();
+}
+
+/* 岩：ゴツゴツした半円。上を少し明るくして立体感を出す */
+function drawRock(g, rnd, cx, baseY, w, h, color) {
+  const n = 8, p = [];
+  for (let i = 0; i <= n; i++) {
+    const a = Math.PI + Math.PI * i / n, k = 0.78 + rnd() * 0.4;
+    p.push([cx + Math.cos(a) * w / 2 * k, baseY + Math.sin(a) * h * k]);
+  }
+  g.beginPath();
+  g.moveTo(cx - w / 2, baseY + h * 0.4);
+  g.lineTo(p[0][0], p[0][1]);
+  for (let i = 1; i < n; i++) {
+    g.quadraticCurveTo(p[i][0], p[i][1], (p[i][0] + p[i + 1][0]) / 2, (p[i][1] + p[i + 1][1]) / 2);
+  }
+  g.lineTo(p[n][0], p[n][1]);
+  g.lineTo(cx + w / 2, baseY + h * 0.4);
+  g.closePath();
+  const gr = g.createLinearGradient(0, baseY - h, 0, baseY + h * 0.4);
+  gr.addColorStop(0, mixHex(color, WHITE, 0.22));
+  gr.addColorStop(1, color);
+  g.fillStyle = gr;
+  g.fill();
+}
+
+/* サンゴ：type 0=枝サンゴ 1=丸いサンゴ 2=筒サンゴ 3=ウチワ状（枝が大きく広がる） */
+function drawCoral(g, rnd, x, y, s, color, type) {
+  g.lineCap = g.lineJoin = 'round';
+  g.strokeStyle = color;
+  g.fillStyle = color;
+  if (type === 0 || type === 3) {
+    const trunks = type === 0 ? 2 + ((rnd() * 2) | 0) : 1;
+    for (let i = 0; i < trunks; i++) {
+      const off = i - (trunks - 1) / 2;
+      coralBranch(g, rnd, x + off * 8 * s, y, -Math.PI / 2 + off * 0.5 + (rnd() - 0.5) * 0.3,
+                  (38 + rnd() * 26) * s, 6.5 * s, 3, type === 3 ? 0.55 : 0.4);
+    }
+  } else if (type === 1) {
+    const rw = (22 + rnd() * 14) * s, rh = rw * (0.6 + rnd() * 0.2);
+    g.beginPath(); g.ellipse(x, y, rw, rh, 0, Math.PI, TAU); g.closePath(); g.fill();
+    g.fillStyle = mixHex(color, WHITE, 0.3);       // 表面のつぶつぶ
+    for (let i = 0; i < 7; i++) {
+      const a = Math.PI + rnd() * Math.PI, d = rnd() * 0.75;
+      g.beginPath(); g.arc(x + Math.cos(a) * rw * d, y + Math.sin(a) * rh * d, (1.6 + rnd() * 1.6) * s, 0, TAU); g.fill();
+    }
+  } else {
+    const n = 4 + ((rnd() * 3) | 0), tw = 7 * s;
+    for (let i = 0; i < n; i++) {
+      const tx = x + (i - (n - 1) / 2) * 9 * s, th = (30 + rnd() * 40) * s;
+      g.fillStyle = color;
+      g.beginPath();
+      g.moveTo(tx - tw / 2, y); g.lineTo(tx - tw / 2, y - th);
+      g.arc(tx, y - th, tw / 2, Math.PI, 0);
+      g.lineTo(tx + tw / 2, y);
+      g.fill();
+      g.fillStyle = mixHex(color, BLACK, 0.35);   // 筒の口
+      g.beginPath(); g.ellipse(tx, y - th, tw * 0.4, tw * 0.17, 0, 0, TAU); g.fill();
+    }
+  }
+}
+function coralBranch(g, rnd, x, y, ang, len, w, depth, spread) {
+  const x2 = x + Math.cos(ang) * len, y2 = y + Math.sin(ang) * len;
+  g.lineWidth = Math.max(1, w);
+  g.beginPath(); g.moveTo(x, y); g.lineTo(x2, y2); g.stroke();
+  if (depth <= 0) return;
+  const n = rnd() < 0.35 ? 3 : 2;                  // 先で2〜3本に分かれる
+  for (let i = 0; i < n; i++) {
+    const off = (i - (n - 1) / 2) * spread * 2 + (rnd() - 0.5) * 0.3;
+    coralBranch(g, rnd, x2, y2, ang + off, len * (0.66 + rnd() * 0.14), w * 0.72, depth - 1, spread);
+  }
+}
+
+
+/* =====================================================================
+   5. 登場する物のデータ
+   ===================================================================== */
+const schools = [];   // 魚の群れ。群れごとに fish 配列を持つ
+const fishAll = [];   // すべての魚（奥→手前の描画順）
+const bubbles = [];   // 生きている泡。生まれた順に並ぶ（先頭がいちばん古い）
+const bubblePool = []; // 使い終わった泡の置き場。新しい泡はここから取り出して再利用する（new しない）
+const particles = []; // 漂う粒
+const particleTiers = [[], [], []]; // 粒を奥・中・手前に分けたもの（まとめて描くため）
+const food = [];      // 生きているエサ。生まれた順に並ぶ（先頭がいちばん古い）
+const foodPool = [];  // 食べられた・消えたエサの置き場。新しいエサはここから取り出して再利用する（new しない）
+const ripples = [];   // 波紋
+const pops = [];      // 泡が弾けた「パチン」の表示（数は少なく、すぐ消える）
+const popPool = [];   // 使い終わった pops の置き場
+const rays = [];      // 光の筋ごとの揺れ方
+const seaweeds = [];  // 海藻（layer 0=奥, 1=手前）
+
+/* ---- 5-1. 魚 ---- */
+function makeSchool(def, big) {
+  const school = {
+    def, big, fish: [],
+    // 群れの目標点は、ゆっくりした往復運動（リサジュー曲線）で画面を巡る
+    fx: rand(0.07, 0.14), fy: rand(0.08, 0.15), p1: rand(0, TAU), p2: rand(0, TAU),
+    range: big ? 0.62 : 0.36,   // 横に動く範囲（大きな魚は画面外まで）
+    rangeY: big ? 0.2 : 0.25,
+    pull: big ? 0.6 : 1,        // 目標点への引力（大きな魚は気まぐれに）
+  };
+  schools.push(school);
+  return school;
+}
+
+/* 魚を1匹作って群れに加える。fade=0 なら、すーっと現れる */
+function makeFish(school, x, y, fade) {
+  const { W, H, U } = view, def = school.def, big = school.big;
+  const hue = def.hue + rand(-8, 8), lit = def.lit + rand(-5, 5), sat = def.sat;
+  const ang = rand(0, TAU), cruise = rand(def.speed[0], def.speed[1]);
+  const f = {
+    school, big, fade,
+    x: clamp(x, 0, W), y: clamp(y, 0, H),
+    vx: Math.cos(ang) * cruise * U, vy: Math.sin(ang) * cruise * U,
+    size: rand(def.size[0], def.size[1]),   // 体長（view.U 倍して使う）
+    z: def.z + rand(-0.06, 0.06),           // 奥行き。描画順と霞みに使う
+    cruise,                                  // いつもの泳ぐ速さ
+    wp: rand(0, TAU),                        // 気まぐれ曲がりの位相
+    tp: rand(0, TAU), tamp: 0.3,             // 尾びれの位相と振れ幅
+    face: 1, faceT: 1, pitch: 0,             // 向き（左右の反転は滑らかに）
+    panic: 0,                                // 驚き 0〜1
+    scareT: 0, scareX: 0, scareY: 0, scareS: 0, // 波が届いたときに驚く予約
+    scareMul: big ? 0.35 : 1,                // 驚きやすさ（大きな魚は動じにくい）
+    fullUntil: 0,                            // この時刻までエサに興味がない
+    flinchUntil: 0,                          // この時刻までは、泡に触れてもビクッとしない（続けざまに跳ねないため）
+    mx: big ? -def.size[1] * 0.7 : CONFIG.SIDE_MARGIN, // 端の余白（負なら画面外へ出てよい）
+    mTop: big ? 20 : CONFIG.TOP_MARGIN,
+    mBot: big ? 140 : CONFIG.BOTTOM_MARGIN,
+    // 色（毎フレーム文字列を作らないよう、先に作っておく）
+    cBody: `hsl(${hue | 0},${sat}%,${lit | 0}%)`,
+    cBelly: `hsl(${(hue + 6) | 0},${sat - 8}%,${Math.min(92, lit + 20) | 0}%)`,
+    cFin: `hsl(${(hue - 6) | 0},${sat}%,${(lit - 10) | 0}%)`,
+    cTail: `hsl(${hue | 0},${sat}%,${(lit - 5) | 0}%)`,
+  };
+  school.fish.push(f);
+  fishAll.push(f);
+  return f;
+}
+
+/* 群れに1匹足す：同じ群れの仲間の近くから。群れが空なら画面のどこかから */
+function addFish(school, fade) {
+  const { W, H, U } = view;
+  if (school.fish.length) {
+    const m = school.fish[(Math.random() * school.fish.length) | 0];
+    return makeFish(school, m.x + rand(-30, 30) * U, m.y + rand(-20, 20) * U, fade);
+  }
+  return makeFish(school, rand(W * 0.2, W * 0.8), rand(H * 0.25, H * 0.65), fade);
+}
+
+function createFish() {
+  schools.length = 0; fishAll.length = 0;
+  SCHOOL_DEFS.forEach(def => makeSchool(def, false));
+  for (let i = 0; i < CONFIG.BIG_FISH_COUNT; i++) {
+    const s = makeSchool(BIG_DEF, true);
+    makeFish(s, rand(view.W * 0.1, view.W * 0.9), rand(view.H * 0.25, view.H * 0.65), 1);
+  }
+  setFishCount(fishTarget(), 1);
+}
+
+/* 魚の数を total 匹にする（大きな魚は数えない）。割合どおりに群れへ割り振り、増減は群れごとに行う。
+   増える魚はすーっと現れる（fade=0）。最初の生成だけは、最初から見えている（fade=1） */
+function setFishCount(total, fade = 0) {
+  const normal = schools.filter(s => !s.big);
+  const sum = normal.reduce((a, s) => a + s.def.share, 0);
+  const raw = normal.map(s => total * s.def.share / sum);
+  const target = raw.map(Math.floor);                    // まず切り捨て、余りは小数部の大きい群れから1匹ずつ足す
+  let rest = total - target.reduce((a, b) => a + b, 0);
+  raw.map((r, i) => [r - Math.floor(r), i]).sort((a, b) => b[0] - a[0]).forEach(([, i]) => { if (rest-- > 0) target[i]++; });
+
+  normal.forEach((s, i) => {
+    while (s.fish.length > target[i]) fishAll.splice(fishAll.indexOf(s.fish.pop()), 1);
+    while (s.fish.length < target[i]) addFish(s, fade);
+  });
+  fishAll.sort((a, b) => a.z - b.z);                     // 奥から手前の順に並べ直す
+}
+
+/* ---- 5-2. 泡（プール＋古い順に入れ替え） ----
+   ・泡の数が上限に達したら、新しい泡を止めるのではなく、いちばん古い泡を作り直して使う
+   ・泡の入れ物は使い回す（bubblePool）ので、数が増えても new がほとんど起きない */
+/* user=true は、ユーザーが出した泡（なぞった泡・タップの泡）。魚に触れると弾け、魚はこの泡を壁のように避ける */
+function spawnBubble(x, y, r, vy, a, user = false) {
+  const limit = settings.bubbleLimit;
+  if (limit <= 0) return;
+  let b;
+  if (bubbles.length >= limit) b = bubbles.shift();      // 満杯：先頭（最古）の泡をそのまま再利用する
+  else b = bubblePool.pop() || { x: 0, y: 0, r: 0, vy: 0, a: 0, ph: 0, wf: 0, wa: 0, user: false, fragile: false, dead: false, popAt: Infinity };
+  b.x = x; b.y = y; b.r = r; b.vy = vy; b.a = a; b.user = user; b.dead = false;
+  b.fragile = user && Math.random() < CONFIG.BUBBLE_POP_CHANCE;   // 魚に触れたら弾ける泡か
+  b.popAt = Infinity;                                              // タップの衝撃で弾ける予定の時刻（Infinity = 予定なし）
+  b.ph = rand(0, TAU); b.wf = rand(1.2, 2.6); b.wa = rand(3, 9);
+  bubbles.push(b);
+}
+/* 上限を下げたとき、はみ出した分を古い順に片付ける */
+function trimBubbles() {
+  while (bubbles.length > settings.bubbleLimit) bubblePool.push(bubbles.shift());
+}
+/* 泡を弾けさせる：泡に印を付け（次の updateBubbles で pool に戻る）、その場に「パチン」を出す */
+function popBubble(b) {
+  b.dead = true;
+  if (pops.length >= CONFIG.POP_MAX) popPool.push(pops.shift());
+  const p = popPool.pop() || { x: 0, y: 0, r: 0, age: 0, ang: 0 };
+  p.x = b.x; p.y = b.y; p.r = b.r; p.age = 0; p.ang = rand(0, TAU);
+  pops.push(p);
+}
+function spawnAmbientBubble() {
+  const U = view.U, r = U * (1.4 + 4.6 * Math.random() * Math.random()); // 小さい泡ほど多い
+  spawnBubble(rand(0, view.W), view.H + r * 2, r, U * (22 + r / U * 6 + rand(0, 12)), rand(0.4, 0.8));
+}
+
+/* ---- 5-3. 漂う粒、光の筋、海藻 ---- */
+function makeParticle() {
+  const z = rand(0.2, 1);
+  const p = {
+    x: rand(0, view.W), y: rand(0, view.H), z,
+    r: view.U * (0.6 + 1.3 * z) * rand(0.7, 1.1),
+    vx: rand(-4, 4) * view.U, vy: rand(-2, 6) * view.U, ph: rand(0, TAU),
+    tier: z < 0.45 ? 0 : z < 0.75 ? 1 : 2,
+  };
+  particles.push(p);
+  particleTiers[p.tier].push(p);
+}
+/* 粒の数を n にする（増減はその場で） */
+function setParticleCount(n) {
+  while (particles.length > n) {
+    const p = particles.pop();
+    const t = particleTiers[p.tier];
+    t.splice(t.indexOf(p), 1);
+  }
+  while (particles.length < n) makeParticle();
+}
+function createRays() {
+  rays.length = 0;
+  for (let i = 0; i < CONFIG.RAY_COUNT; i++) rays.push({ a: rand(0, TAU), b: rand(0, TAU), c: rand(0, TAU), w: Math.random() });
+}
+function createSeaweed() {
+  seaweeds.length = 0;
+  const make = (layer, n, h, w) => {
+    for (let i = 0; i < n; i++) {
+      seaweeds.push({
+        layer,
+        fx: (i + rand(0.15, 0.85)) / n,        // 横位置（画面幅に対する割合）
+        h: rand(h[0], h[1]), w: rand(w[0], w[1]), ph: rand(0, TAU),
+      });
+    }
+  };
+  make(0, CONFIG.SEAWEED_FAR, [50, 120], [3, 6]);    // 奥：低くて細い
+  make(1, CONFIG.SEAWEED_NEAR, [90, 190], [6, 11]);  // 手前：高くて太い
+}
+
+
+/* =====================================================================
+   6. 操作（タップ・長押し・なぞる）
+   pointers: いま触れている指（複数OK）。
+     mode 'wait' = まだ判定中、'drag' = なぞり中、'feed' = 長押しでエサを落とし中
+   ※ 設定パネルは canvas と別の要素なので、パネル上の操作はここには届かない
+   ===================================================================== */
+const pointers = new Map();
+const hintEl = document.getElementById('hint');
+let hintDone = false;
+function hideHint() {
+  if (hintDone) return;
+  hintDone = true;
+  hintEl.classList.remove('show');
+}
+function cancelPointers() {
+  pointers.forEach(p => clearTimeout(p.timer));
+  pointers.clear();
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+  const p = {
+    id: e.pointerId, x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY,
+    mode: 'wait', lx: e.clientX, ly: e.clientY, acc: 0, feedAcc: 0, feedT: 0, timer: 0,
+  };
+  pointers.set(e.pointerId, p);
+  // 一定時間動かさず押し続けたら「長押し」→ エサモードへ
+  p.timer = setTimeout(() => {
+    if (pointers.get(p.id) === p && p.mode === 'wait') { p.mode = 'feed'; p.feedAcc = 1; p.feedT = 0; }
+  }, CONFIG.LONG_PRESS_MS);
+  hideHint();
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  p.x = e.clientX; p.y = e.clientY;
+  if (p.mode === 'wait' && Math.hypot(p.x - p.sx, p.y - p.sy) > CONFIG.MOVE_THRESHOLD * view.U) {
+    p.mode = 'drag';              // 動かしたので長押しではなく「なぞる」
+    clearTimeout(p.timer);
+    p.lx = p.sx; p.ly = p.sy;
+  }
+  if (p.mode === 'drag') trailBubbles(p);
+});
+
+function endPointer(e) {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  clearTimeout(p.timer);
+  pointers.delete(e.pointerId);
+  // 判定中のまま指を離した = タップ。波紋を出す
+  if (p.mode === 'wait' && e.type === 'pointerup') addRipple(p.x, p.y);
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+
+/* なぞった軌跡に、一定間隔で泡を出す（間隔 = TRAIL_SPACING ÷ パネルの「なぞった時の泡の量」） */
+function trailBubbles(p) {
+  const amount = settings.trailAmount;
+  const U = view.U, dx = p.x - p.lx, dy = p.y - p.ly, dist = Math.hypot(dx, dy);
+  if (dist < 0.01) return;
+  p.lx = p.x; p.ly = p.y;
+  if (amount <= 0) return;
+  p.acc += dist;
+  const step = CONFIG.TRAIL_SPACING * U / amount;
+  let guard = Math.max(8, Math.ceil(amount * 8)); // 指が速くても、1回に出す泡の数は制限する
+  while (p.acc >= step && guard-- > 0) {
+    p.acc -= step;
+    const back = p.acc / dist; // 今の位置から軌跡を少しさかのぼった所に出す
+    spawnBubble(p.x - dx * back + rand(-4, 4) * U, p.y - dy * back + rand(-4, 4) * U,
+                U * rand(1.8, 6), U * rand(10, 26), rand(0.55, 0.9), true);
+  }
+  if (guard <= 0) p.acc = 0;
+}
+
+/* iPhone の Safari 用：拡大・スクロール・ダブルタップ拡大・長押しメニューを止める。
+   CSS（touch-action: none）に加えて、イベント側でも止めておく。
+   ただし設定パネル（#ui の中）は、スライダーの操作やスクロールのため止めない */
+const inUi = (e) => e.target && e.target.closest && e.target.closest('#ui');
+['touchstart', 'touchmove', 'touchend'].forEach(t =>
+  document.addEventListener(t, (e) => { if (!inUi(e)) e.preventDefault(); }, { passive: false }));
+const stop = (e) => e.preventDefault();
+['gesturestart', 'gesturechange', 'gestureend', 'contextmenu', 'selectstart', 'dblclick']
+  .forEach(t => document.addEventListener(t, stop));
+
+
+/* =====================================================================
+   7. タップの波紋と、魚の驚き
+   ===================================================================== */
+function addRipple(x, y) {
+  if (ripples.length >= 12) ripples.shift();
+  ripples.push({ x, y, age: 0 });
+  shockBubbles(x, y);   // タップで出る泡より先に（出た泡がすぐ弾けないように）
+  const U = view.U;
+  for (let i = 0; i < 4; i++) {
+    spawnBubble(x + rand(-10, 10) * U, y + rand(-6, 6) * U, U * rand(1.4, 3.6), U * rand(14, 34), rand(0.5, 0.85), true);
+  }
+  scareFish(x, y);
+}
+
+/* 波紋の輪（いちばん内側の輪）の半径。age 秒後に、中心からこの距離（pt。view.U を掛ける前）まで広がっている。
+   drawRipples() の輪と、タップの衝撃で泡が弾けるタイミングの両方で使う */
+const RIPPLE_R0 = 10, RIPPLE_R1 = 150;
+const rippleRadius = (age) => RIPPLE_R0 + RIPPLE_R1 * (1 - Math.pow(1 - Math.min(1, age / RIPPLE_LIFE), 2.2));
+/* その逆：中心からの距離 d（pt）に輪が届くまでの秒数 */
+const rippleArrival = (d) => RIPPLE_LIFE * (1 - Math.pow(1 - clamp((d - RIPPLE_R0) / RIPPLE_R1, 0, 1), 1 / 2.2));
+
+/* タップの衝撃：近くの泡に「輪が届いたら弾ける」予約を入れる（タップのときに1回だけ。毎フレームの計算は増えない）。
+   SHOCK_SURE_R の内側は必ず、そのすぐ外は SHOCK_NEAR_CHANCE、外側ほど下がって SHOCK_R で SHOCK_EDGE_CHANCE。弾けるのは updateBubbles() */
+function shockBubbles(x, y) {
+  const C = CONFIG, U = view.U;
+  for (const b of bubbles) {
+    const d = Math.hypot(b.x - x, b.y - y) / U;
+    if (d > C.SHOCK_R) continue;
+    const chance = d <= C.SHOCK_SURE_R ? 1
+      : C.SHOCK_NEAR_CHANCE + (C.SHOCK_EDGE_CHANCE - C.SHOCK_NEAR_CHANCE) * (d - C.SHOCK_SURE_R) / (C.SHOCK_R - C.SHOCK_SURE_R);
+    if (Math.random() >= chance) continue;
+    const at = simT + rippleArrival(d);
+    if (at < b.popAt) b.popAt = at;               // 別のタップで先に予約があれば、早いほう
+  }
+}
+
+/* 波紋の中心から遠い魚ほど、波が届くまで少し遅れて驚く。「逃げる強さ」が大きいほど遠くまで届く */
+function scareFish(x, y) {
+  const U = view.U, R = CONFIG.SCARE_RADIUS * U * (0.5 + 0.5 * settings.flee);
+  for (const f of fishAll) {
+    const d = Math.hypot(f.x - x, f.y - y);
+    if (d > R) continue;
+    const s = Math.pow(1 - d / R, 0.6);
+    if (f.scareT === 0 || s > f.scareS) {
+      f.scareT = simT + d / (CONFIG.WAVE_SPEED * U);
+      f.scareX = x; f.scareY = y; f.scareS = s;
+    }
+  }
+}
+
+
+/* =====================================================================
+   8. 毎フレームの更新
+   ===================================================================== */
+const pushers = []; // なぞり中の指（魚が避ける）
+
+function update(dt) {
+  simT += dt;
+  updateTheme(dt);
+  updateFeeding(dt);
+  updateFood(dt);
+  updateFish(dt);
+  updateBubbles(dt);
+  updateParticles(dt);
+  updateRipples(dt);
+}
+
+/* テーマ切り替え中：色の数値を、前→次へ少しずつ動かす */
+function updateTheme(dt) {
+  if (themeT >= 1) return;
+  themeT = Math.min(1, themeT + dt / CONFIG.THEME_FADE_SEC);
+  themeEase = themeT * themeT * (3 - 2 * themeT); // ゆっくり始まり、ゆっくり終わる
+  for (const k in rtTo) rt[k] = rtFrom[k] + (rtTo[k] - rtFrom[k]) * themeEase;
+  if (themeT >= 1) releaseOldBackdrop();
+}
+
+/* 長押し中の指の周りにエサを落とし続ける。
+   落とす数は、押し始め FEED_RATE_START → 押し続けるほど少しずつ増えて FEED_RATE_END（個/秒）。
+   それにパネルの「エサの量」を掛ける */
+function updateFeeding(dt) {
+  const C = CONFIG;
+  for (const p of pointers.values()) {
+    if (p.mode !== 'feed') continue;
+    p.feedT += dt;
+    const k = Math.min(1, p.feedT / C.FEED_RAMP_SEC);
+    p.feedAcc += dt * (C.FEED_RATE_START + (C.FEED_RATE_END - C.FEED_RATE_START) * k) * settings.foodAmount;
+    while (p.feedAcc >= 1) { p.feedAcc -= 1; spawnFood(p.x, p.y); }
+  }
+}
+
+/* ---- エサ：粒ごとに速さ・横の揺れ・大きさ・色が少しずつ違い、ばらけながら沈む。
+        海底に着いたら消えるまで置かれる。
+        泡と同じ方式：上限に達したら古い粒を作り直す／食べられた・消えた粒は foodPool に戻して再利用 ---- */
+function floorY() { return view.H - 52 * view.U; }
+function spawnFood(x, y) {
+  const C = CONFIG, U = view.U;
+  let q;
+  if (food.length >= C.MAX_FOOD) q = food.shift();   // 上限：いちばん古い粒を作り直す
+  else q = foodPool.pop() || { x: 0, y: 0, vy: 0, ph: 0, wf: 0, wa: 0, r: 0, c: 0, off: 0, age: 0, rest: false, dead: false };
+  // 指を中心にした円の中へランダムに散らす（√ で、円の中が均等になる）
+  const ang = rand(0, TAU), rad = C.FOOD_SPREAD_R * U * Math.sqrt(Math.random());
+  q.x = x + Math.cos(ang) * rad;
+  q.y = y + Math.sin(ang) * rad;
+  q.vy = rand(9, 27) * U;                       // 沈む速さ
+  q.ph = rand(0, TAU);                          // 揺れの位相
+  q.wf = rand(1.3, 3.4);                        // 揺れの速さ
+  q.wa = rand(3, 14) * U;                       // 横に揺れる幅
+  const s = Math.random();
+  q.r = (C.FOOD_SIZE[0] + (C.FOOD_SIZE[1] - C.FOOD_SIZE[0]) * s * s) * U;  // s² で小さい粒が多くなる
+  q.c = (Math.random() * C.FOOD_COLORS.length) | 0;   // 色（FOOD_COLORS の番号）
+  q.off = rand(-7, 3) * U;                      // 海底での止まる高さのばらつき
+  q.age = 0; q.rest = false; q.dead = false;
+  food.push(q);
+}
+function updateFood(dt) {
+  const U = view.U, fy = floorY();
+  let w = 0;                                    // 生き残った粒を前へ詰める（並び順＝古い順 を保つ）
+  for (let i = 0; i < food.length; i++) {
+    const q = food[i];
+    q.age += dt;
+    if (q.dead || q.age > CONFIG.FOOD_LIFE) { foodPool.push(q); continue; }
+    if (!q.rest) {
+      q.ph += dt * q.wf;
+      q.y += q.vy * dt;
+      q.x += Math.sin(q.ph) * q.wa * dt;        // 粒ごとの幅と速さで、左右にふらふら
+      if (q.y >= fy + q.off) { q.y = fy + q.off; q.rest = true; }
+    }
+    food[w++] = q;
+  }
+  food.length = w;
+}
+
+/* ---- 泡のマス目 ----
+   魚が「近くのユーザーの泡」だけを調べられるよう、毎フレーム、ユーザーの泡を画面のマス目に振り分ける。
+   マスの大きさは、泡に気づく距離より大きくしてあるので、魚は自分のマスと周りの8マスだけを見ればよい。
+   （全部の泡×全部の魚を比べると、泡400×魚100で4万回。マス目なら数百回で済む）
+   各マスの泡は、つながったリスト（gHead にマスの先頭、gNext に次の番号。-1 で終わり）で持つ */
+const gItems = [];               // マス目に入れた泡（番号は gNext と共通）
+let gHead = new Int32Array(0), gNext = new Int32Array(64), gCols = 0, gRows = 0, gCell = 1;
+function buildBubbleGrid() {
+  const { W, H, U } = view;
+  gItems.length = 0;
+  for (const b of bubbles) if (b.user && !b.dead && b.y > -b.r && b.y < H + b.r) gItems.push(b);
+  const n = gItems.length;
+  if (!n) return 0;
+  gCell = (CONFIG.BUBBLE_WALL_R + 20) * U;    // 泡の半径(最大6) + 魚の当たり(最大約10) + 気づく距離 の和より大きい
+  gCols = Math.ceil(W / gCell) + 1; gRows = Math.ceil(H / gCell) + 1;
+  if (gHead.length < gCols * gRows) gHead = new Int32Array(gCols * gRows);
+  if (gNext.length < n) gNext = new Int32Array(n * 2);
+  gHead.fill(-1, 0, gCols * gRows);
+  for (let i = 0; i < n; i++) {
+    const b = gItems[i];
+    const cx = clamp((b.x / gCell) | 0, 0, gCols - 1), cy = clamp((b.y / gCell) | 0, 0, gRows - 1);
+    const c = cy * gCols + cx;
+    gNext[i] = gHead[c]; gHead[c] = i;
+  }
+  return n;
+}
+
+/* ---- 魚：ボイドの3つの規則（分離・整列・結合）＋ 目標点・気まぐれ・端・エサ・驚き ----
+   パネルの設定：speed=泳ぐ速さ、flee=逃げる強さ、foodAttract=エサへの集まりやすさ */
+function updateFish(dt) {
+  const { W, H, U } = view, C = CONFIG;
+  const spd = settings.speed;
+  const FLEE = C.FLEE_SPEED * U * settings.flee;
+  const foodAttract = settings.foodAttract;
+  const perc2 = (C.PERCEPTION * U) ** 2;
+  const foodR2 = (C.FOOD_ATTRACT_R * U * foodAttract) ** 2;
+  const foodW = C.FOOD_W * U * foodAttract;
+  const pushR = C.TOUCH_PUSH_R * U, pushR2 = pushR * pushR;
+  const nUserBubbles = buildBubbleGrid();
+  const hitK = C.BUBBLE_HIT_R * U, wallR = C.BUBBLE_WALL_R * U, wallW = C.BUBBLE_WALL_W * U, flinch = FLEE * C.BUBBLE_FLINCH;
+  pushers.length = 0;
+  for (const p of pointers.values()) if (p.mode === 'drag') pushers.push(p);
+
+  for (const s of schools) {
+    const arr = s.fish, n = arr.length;
+    if (!n) continue;
+
+    // 群れの重心と、群れ全体の目標点
+    let scx = 0, scy = 0;
+    for (const f of arr) { scx += f.x; scy += f.y; }
+    scx /= n; scy /= n;
+    const tx = W * (0.5 + s.range * Math.sin(simT * s.fx + s.p1));
+    const ty = H * (0.45 + s.rangeY * Math.sin(simT * s.fy + s.p2));
+
+    for (let i = 0; i < n; i++) {
+      const f = arr[i];
+      if (f.fade < 1) f.fade = Math.min(1, f.fade + dt / 0.9); // 増えた魚はすーっと現れる
+
+      // (a) 波が届いたら驚く：外向きに速度を足し、驚き度を上げる
+      if (f.scareT > 0 && simT >= f.scareT) {
+        f.scareT = 0;
+        let dx = f.x - f.scareX, dy = f.y - f.scareY, dd = Math.hypot(dx, dy);
+        if (dd < 1) { dx = rand(-1, 1); dy = rand(-1, 1); dd = Math.hypot(dx, dy) || 1; }
+        const st = f.scareS * f.scareMul;
+        f.vx += dx / dd * FLEE * 0.85 * st;
+        f.vy += dy / dd * FLEE * 0.85 * st;
+        f.panic = Math.max(f.panic, st);
+      }
+      if (f.panic > 0) f.panic = Math.max(0, f.panic - dt / C.PANIC_TIME);
+      const calm = 1 - f.panic; // 驚いている間は仲間へ寄る力を弱める（散らばる）
+
+      // (b) 仲間を見て、分離・整列・結合を計算（同じ群れの中だけ）
+      let sepX = 0, sepY = 0, avx = 0, avy = 0, acx = 0, acy = 0, nb = 0;
+      const sepR = f.size * U * C.SEPARATION_K, sepR2 = sepR * sepR;
+      for (let j = 0; j < n; j++) {
+        if (j === i) continue;
+        const o = arr[j];
+        const dx = o.x - f.x, dy = o.y - f.y, d2 = dx * dx + dy * dy;
+        if (d2 > perc2) continue;
+        nb++; avx += o.vx; avy += o.vy; acx += o.x; acy += o.y;
+        if (d2 < sepR2 && d2 > 0.0001) {          // 近すぎる仲間からは離れる
+          const dd = Math.sqrt(d2), k = (sepR - dd) / (sepR * dd);
+          sepX -= dx * k; sepY -= dy * k;
+        }
+      }
+      let ax = sepX * C.SEPARATION_W * U, ay = sepY * C.SEPARATION_W * U;       // 分離
+      if (nb > 0) {
+        ax += (avx / nb - f.vx) * C.ALIGNMENT_W;                                // 整列
+        ay += (avy / nb - f.vy) * C.ALIGNMENT_W;
+        ax += (acx / nb - f.x) * C.COHESION_W * calm;                           // 結合
+        ay += (acy / nb - f.y) * C.COHESION_W * calm;
+      }
+      ax += (scx - f.x) * C.SCHOOL_PULL * calm;   // 群れの重心へ弱く戻る
+      ay += (scy - f.y) * C.SCHOOL_PULL * calm;
+
+      // (c) 群れの目標点へ（群れ全体がゆっくり画面を巡る）
+      const gx = tx - f.x, gy = ty - f.y, gd = Math.hypot(gx, gy) || 1;
+      ax += gx / gd * C.TARGET_W * U * s.pull;
+      ay += gy / gd * C.TARGET_W * U * s.pull;
+
+      // (d) 気まぐれ：進行方向の横へ、ゆっくり揺れるように曲がる
+      const sp0 = Math.hypot(f.vx, f.vy) || 1;
+      const side = Math.sin(simT * 0.6 + f.wp) * C.WANDER_W * U;
+      ax += -f.vy / sp0 * side;
+      ay += f.vx / sp0 * side;
+
+      // (e) エサ：近くにあれば、いちばん近いエサへゆっくり向かう
+      let seeking = false;
+      if (food.length && f.panic < 0.2 && simT > f.fullUntil) {
+        let best = -1, bd2 = foodR2;
+        for (let k = 0; k < food.length; k++) {
+          const q = food[k];
+          if (q.dead) continue;                  // 今のコマで誰かが食べた粒（片付けは updateFood で）
+          const dx = q.x - f.x, dy = q.y - f.y, d2 = dx * dx + dy * dy;
+          if (d2 < bd2) { bd2 = d2; best = k; }
+        }
+        if (best >= 0) {
+          const q = food[best], dd = Math.sqrt(bd2) || 1;
+          if (dd < Math.max(f.size * U * 0.5, 7 * U)) {
+            // 食べた！ エサに印を付けて（次の updateFood で foodPool に戻る）、少しのあいだ満腹になる
+            q.dead = true;
+            f.fullUntil = simT + rand(1.6, 3.2);
+            f.vx *= 0.5; f.vy *= 0.5;
+            if (Math.random() < 0.35) spawnBubble(f.x, f.y - f.size * U * 0.2, U * rand(1.2, 2.2), U * rand(20, 34), 0.7);
+          } else {
+            seeking = true;
+            ax += (q.x - f.x) / dd * foodW;
+            ay += (q.y - f.y) / dd * foodW;
+            if (dd < 60 * U) {                  // 近づいたらブレーキをかけて、ゆっくり食べにいく
+              const k2 = (1 - dd / (60 * U)) * 2.2;
+              ax -= f.vx * k2; ay -= f.vy * k2;
+            }
+          }
+        }
+      }
+
+      // (f) 画面の端：近づくほど強く押し戻す（エサを探しているときは海底近くまで行ける）
+      const mx = f.mx * U, mTop = f.mTop * U, mBot = (seeking ? 38 : f.mBot) * U;
+      if (f.x < mx) ax += (mx - f.x) * C.BOUND_K; else if (f.x > W - mx) ax -= (f.x - (W - mx)) * C.BOUND_K;
+      if (f.y < mTop) ay += (mTop - f.y) * C.BOUND_K; else if (f.y > H - mBot) ay -= (f.y - (H - mBot)) * C.BOUND_K;
+
+      // (g) なぞっている指からは、そっと避ける
+      for (const p of pushers) {
+        const dx = f.x - p.x, dy = f.y - p.y, d2 = dx * dx + dy * dy;
+        if (d2 < pushR2 && d2 > 1) {
+          const dd = Math.sqrt(d2), k = (1 - dd / pushR) * C.TOUCH_PUSH_W * U / dd;
+          ax += dx * k; ay += dy * k;
+        }
+      }
+
+      // (g2) ユーザーの泡：近い泡は壁のように避ける。触れたら、弾ける泡なら弾けて魚はビクッと離れ、
+      //      弾けない泡なら強く押し返される（奥の大きな魚は関係しない）。壁の力は wx, wy に分けてためる
+      let wx = 0, wy = 0;
+      if (nUserBubbles && !f.big) {
+        const fr = f.size * hitK;                     // 魚の当たりの半径
+        const cx = (f.x / gCell) | 0, cy = (f.y / gCell) | 0;
+        for (let gy = Math.max(0, cy - 1); gy <= cy + 1 && gy < gRows; gy++) {
+          for (let gx = Math.max(0, cx - 1); gx <= cx + 1 && gx < gCols; gx++) {
+            for (let bi = gHead[gy * gCols + gx]; bi >= 0; bi = gNext[bi]) {
+              const b = gItems[bi];
+              if (b.dead || !b.user) continue;        // このコマで、もう弾けた泡／このコマの途中で別の泡に使い回された入れ物
+              const dx = f.x - b.x, dy = f.y - b.y, d2 = dx * dx + dy * dy;
+              const hit = b.r + fr, far = hit + wallR;
+              if (d2 >= far * far) continue;
+              const dd = Math.sqrt(d2) || 0.001;
+              if (dd < hit && b.fragile) {
+                // 触れた（弾ける泡）：泡は弾ける。魚は泡と反対へ跳ねる（続けざまには跳ねない）
+                popBubble(b);
+                if (simT >= f.flinchUntil) {
+                  f.vx += dx / dd * flinch; f.vy += dy / dd * flinch;
+                  f.panic = Math.max(f.panic, C.BUBBLE_PANIC);
+                  f.flinchUntil = simT + 0.4;
+                }
+              } else {
+                // 近い（または弾けない泡に触れた）：泡から離れる向きに押す。泡に近いほど強く、触れていれば最大の1.5倍
+                const k2 = Math.min(1.5, 1 - (dd - hit) / wallR) * wallW / dd;
+                wx += dx * k2; wy += dy * k2;
+              }
+            }
+          }
+        }
+      }
+
+      // (h) 力の上限をかけて速度に反映 → 速度の範囲に収める
+      const amax = C.MAX_ACCEL * U * Math.max(1, spd) * (1 + 2.5 * f.panic), am = Math.hypot(ax, ay);
+      if (am > amax) { ax *= amax / am; ay *= amax / am; }
+      // 泡の壁の力は別に上限をかけて足す（群れ・目標点などの力にかき消されず、泡の前でちゃんと曲がる）
+      const wm = Math.hypot(wx, wy);
+      const wmax = amax * C.BUBBLE_WALL_MAX;
+      if (wm > wmax) { wx *= wmax / wm; wy *= wmax / wm; }
+      ax += wx; ay += wy;
+      f.vx += ax * dt; f.vy += ay * dt;
+
+      const cruise = f.cruise * U * spd;                           // 「泳ぐ速さ」はここに効く
+      const vCalm = cruise * (seeking ? 1.0 : 1.3);
+      const vmax = vCalm + (Math.max(FLEE, vCalm) - vCalm) * f.panic; // 驚いている間だけ速く泳げる
+      const vmin = cruise * 0.45;
+      let sp = Math.hypot(f.vx, f.vy) || 0.0001;
+      let ns = sp;
+      if (sp > vmax) ns = sp + (vmax - sp) * Math.min(1, dt * 3.2);   // 速すぎれば滑らかに減速
+      else if (sp < vmin) ns = sp + (vmin - sp) * Math.min(1, dt * 2); // 遅すぎれば加速（止まらない）
+      f.vx *= ns / sp; f.vy *= ns / sp; sp = ns;
+
+      f.x += f.vx * dt; f.y += f.vy * dt;
+      if (f.big) f.x = clamp(f.x, -f.size * U * 1.2, W + f.size * U * 1.2);
+      else f.x = clamp(f.x, 0, W);
+      f.y = clamp(f.y, 0, H);
+
+      // (i) 見た目の向き：左右反転とピッチは滑らかに、尾びれは速いほど速く振る
+      if (Math.abs(f.vx) > 5 * U) f.faceT = f.vx > 0 ? 1 : -1;
+      f.face += (f.faceT - f.face) * Math.min(1, dt * 7);
+      const pt = clamp(Math.atan2(f.vy, Math.abs(f.vx) + 1), -0.75, 0.75);
+      f.pitch += (pt - f.pitch) * Math.min(1, dt * 5);
+      f.tp += dt * (7 + sp / U * 0.13);
+      f.tamp = 0.3 + 0.25 * f.panic;
+    }
+  }
+}
+
+/* ---- 泡・粒・波紋 ---- */
+let ambientAcc = 0;
+function updateBubbles(dt) {
+  const U = view.U;
+  ambientAcc += dt * CONFIG.AMBIENT_BUBBLE_RATE;
+  while (ambientAcc >= 1) { ambientAcc -= 1; spawnAmbientBubble(); }
+  // 前から順に動かし、水面を抜けた泡は pool に戻す。生き残った泡は詰め直すので「生まれた順」が保たれる
+  let w = 0;
+  for (let i = 0; i < bubbles.length; i++) {
+    const b = bubbles[i];
+    b.y -= b.vy * dt;
+    b.ph += b.wf * dt;
+    b.x += Math.sin(b.ph) * b.wa * U * dt; // 左右にゆらゆら
+    if (simT >= b.popAt && !b.dead) popBubble(b);   // タップの衝撃の輪が届いた
+    if (b.dead || b.y < -b.r * 2) bubblePool.push(b);   // 弾けた泡・水面を抜けた泡
+    else bubbles[w++] = b;
+  }
+  bubbles.length = w;
+  // 「パチン」の表示を進めて、終わったものを片付ける
+  let n = 0;
+  for (let i = 0; i < pops.length; i++) {
+    const p = pops[i];
+    p.age += dt;
+    if (p.age >= CONFIG.POP_LIFE) popPool.push(p);
+    else pops[n++] = p;
+  }
+  pops.length = n;
+}
+function updateParticles(dt) {
+  const { W, H, U } = view;
+  for (const p of particles) {
+    p.ph += dt * 0.8;
+    p.x += (p.vx + Math.sin(p.ph) * 5 * U) * dt;
+    p.y += (p.vy + Math.cos(p.ph * 0.7) * 3 * U) * dt;
+    if (p.x < -6) p.x = W + 6; else if (p.x > W + 6) p.x = -6; // 端まで行ったら反対側から
+    if (p.y < -6) p.y = H + 6; else if (p.y > H + 6) p.y = -6;
+  }
+}
+const RIPPLE_LIFE = 2.0;
+function updateRipples(dt) {
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    ripples[i].age += dt;
+    if (ripples[i].age > RIPPLE_LIFE + 0.6) ripples.splice(i, 1);
+  }
+}
+
+
+/* =====================================================================
+   9. 描画（奥から手前の順）
+   背景 → 光の筋 → 奥の海藻 → 奥の魚 → 霞み → 手前の魚 → 手前の海藻 → 手前の飾り
+        → エサ → 泡 → 粒 → 波紋
+   ===================================================================== */
+const FOG_Z = 0.66; // これより奥の魚は、霞みの層の向こう側に描く
+
+function draw() {
+  const { W, H, dpr } = view;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.globalAlpha = 1;
+
+  // 背景。テーマ切り替え中は、前の絵の上に次の絵を少しずつ濃く重ねる
+  if (themeT < 1) {
+    ctx.drawImage(bgFrom, 0, 0, W, H);
+    ctx.globalAlpha = themeEase;
+    ctx.drawImage(bgTo, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.drawImage(bgTo, 0, 0, W, H);
+  }
+
+  drawRays();
+  drawSeaweed(0);
+
+  let i = 0;
+  for (; i < fishAll.length && fishAll[i].z < FOG_Z; i++) drawFish(fishAll[i]);
+  ctx.fillStyle = `rgba(${rt.fogR | 0},${rt.fogG | 0},${rt.fogB | 0},${rt.fogA.toFixed(3)})`; // 奥の魚の上にうっすら色を重ねて、遠く見せる
+  ctx.fillRect(0, 0, W, H);
+  for (; i < fishAll.length; i++) drawFish(fishAll[i]);
+
+  drawSeaweed(1);
+  drawForeground();
+  drawFood();
+  drawBubbles();
+  drawPops();
+  drawParticles();
+  drawRipples();
+  if (SHOW_FPS) drawFps();
+}
+
+/* 手前の飾り（岩・サンゴ・手前の砂丘）。魚より手前に重ねる */
+function drawForeground() {
+  const { W, H } = view, y = H - fgH;
+  if (themeT < 1) {
+    ctx.globalAlpha = 1 - themeEase;
+    ctx.drawImage(fgFrom, 0, y, W, fgH);
+    ctx.globalAlpha = themeEase;
+    ctx.drawImage(fgTo, 0, y, W, fgH);
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.drawImage(fgTo, 0, y, W, fgH);
+  }
+}
+
+/* 光の筋：ゆっくり揺れて、明るさもゆらめく。強さはテーマ×パネルの設定、色は白〜暖色。
+   画面に直接描くと、大きな絵を回転させて6枚重ねるので重い（描画のほとんどを占めていた）。
+   そこで画面の RAY_SCALE 倍の粗い裏キャンバス（rayLayer）に描いて、それを1回で引き伸ばして重ねる。
+   光の筋はもともとぼやけた絵なので、見た目はほぼ変わらない */
+function drawRays() {
+  const strength = rt.rayMul * settings.rayStrength;
+  if (strength < 0.005 || quality.raysOff) return;
+  const { W, H, U } = view, n = rays.length, warm = rt.rayWarm, s = CONFIG.RAY_SCALE, g = rayCtx;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalAlpha = 1;
+  g.clearRect(0, 0, rayLayer.width, rayLayer.height);
+  for (let i = 0; i < n; i++) {
+    const r = rays[i];
+    const x = W * ((i + 0.5) / n) + Math.sin(simT * 0.11 + r.a) * W * 0.07;
+    const ang = 0.2 + Math.sin(simT * 0.17 + r.b) * 0.07;
+    const w = (110 + r.w * 140) * U;
+    const a = Math.min(0.9, (0.13 + 0.14 * (0.5 + 0.5 * Math.sin(simT * 0.45 + r.c))) * strength);
+    g.setTransform(s, 0, 0, s, 0, 0);           // 以降は画面の座標で描ける（実際には s 倍に縮んで描かれる）
+    g.translate(x, -H * 0.04);
+    g.rotate(-ang);
+    if (warm < 0.999) { g.globalAlpha = a * (1 - warm); g.drawImage(raySprite, -w / 2, 0, w, H * 1.05); }
+    if (warm > 0.001) { g.globalAlpha = a * warm; g.drawImage(rayWarmSprite, -w / 2, 0, w, H * 1.05); }
+  }
+  ctx.drawImage(rayLayer, 0, 0, rayLayer.width / s, rayLayer.height / s);
+}
+
+/* 海藻：根元は海底、先端ほど大きく揺れる。layer 0=奥（砂丘の上に生える）、1=手前 */
+function drawSeaweed(layer) {
+  const decorA = rt.decorA;
+  if (decorA < 0.01) return;                    // 「海底の飾り」をOFFにしている
+  const { W, H, U } = view;
+  const r = layer ? rt.wnR : rt.wfR, g = layer ? rt.wnG : rt.wfG, b = layer ? rt.wnB : rt.wfB, al = layer ? rt.wnA : rt.wfA;
+  ctx.strokeStyle = `rgb(${r | 0},${g | 0},${b | 0})`;
+  ctx.globalAlpha = al * decorA;
+  ctx.lineCap = 'round';
+  const y0 = layer ? H + 6 : H - 54 * U;
+  for (const s of seaweeds) {
+    if (s.layer !== layer) continue;
+    const x = s.fx * W, hh = s.h * U;
+    for (let k = 0; k < 2; k++) {                  // 1株につき2本（2本目は短く、揺れ方もずらす）
+      const sw = Math.sin(simT * 0.7 + s.ph + k * 1.3), h = hh * (1 - k * 0.3), dx = k * 9 * U;
+      ctx.lineWidth = s.w * U * (1 - k * 0.25);
+      ctx.beginPath();
+      ctx.moveTo(x + dx, y0);
+      ctx.bezierCurveTo(x + dx + sw * 8 * U, y0 - h * 0.35, x + dx - sw * 12 * U, y0 - h * 0.7, x + dx + sw * 22 * U, y0 - h);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* 魚 1匹：尾びれ → 背びれ → 体 → 腹 → 目。右向きに描いて、向きは scale で反転する */
+function drawFish(f) {
+  const L = f.size * view.U, hl = L * 0.5, H = L * 0.36;
+  ctx.save();
+  ctx.globalAlpha = f.fade;                          // 増えたばかりの魚は薄い
+  ctx.translate(f.x, f.y);
+  ctx.scale(f.face, 1);                              // 左右の向き（反転の途中は細くなって見える）
+  ctx.rotate(f.pitch + Math.sin(f.tp) * 0.035);      // 上下の傾き ＋ 体のわずかな揺れ
+
+  // 尾びれ：付け根を支点に左右に振る
+  ctx.save();
+  ctx.translate(-hl * 0.62, 0);
+  ctx.rotate(Math.sin(f.tp) * f.tamp);
+  ctx.fillStyle = f.cTail;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.quadraticCurveTo(-L * 0.14, -H * 0.2, -L * 0.30, -H * 0.95);
+  ctx.quadraticCurveTo(-L * 0.21, 0, -L * 0.30, H * 0.95);
+  ctx.quadraticCurveTo(-L * 0.14, H * 0.2, 0, 0);
+  ctx.fill();
+  ctx.restore();
+
+  // 背びれ
+  ctx.fillStyle = f.cFin;
+  ctx.beginPath();
+  ctx.moveTo(L * 0.14, -H * 0.5);
+  ctx.quadraticCurveTo(-L * 0.02, -H * 1.25, -L * 0.2, -H * 0.5);
+  ctx.fill();
+
+  // 体
+  ctx.fillStyle = f.cBody;
+  ctx.beginPath();
+  ctx.moveTo(hl, 0);
+  ctx.bezierCurveTo(hl * 0.6, -H * 0.9, -hl * 0.3, -H * 0.7, -hl * 0.7, -H * 0.12);
+  ctx.lineTo(-hl * 0.7, H * 0.12);
+  ctx.bezierCurveTo(-hl * 0.3, H * 0.7, hl * 0.6, H * 0.9, hl, 0);
+  ctx.fill();
+
+  // 腹の明るい部分
+  ctx.fillStyle = f.cBelly;
+  ctx.globalAlpha = 0.6 * f.fade;
+  ctx.beginPath();
+  ctx.moveTo(-hl * 0.55, H * 0.14);
+  ctx.bezierCurveTo(-hl * 0.25, H * 0.62, hl * 0.55, H * 0.8, hl * 0.95, H * 0.04);
+  ctx.bezierCurveTo(hl * 0.5, H * 0.32, -hl * 0.2, H * 0.32, -hl * 0.55, H * 0.14);
+  ctx.fill();
+  ctx.globalAlpha = f.fade;
+
+  // 目
+  ctx.fillStyle = 'rgba(8,24,50,0.9)';
+  ctx.beginPath();
+  ctx.arc(hl * 0.55, -H * 0.2, Math.max(1.1, L * 0.05), 0, TAU);
+  ctx.fill();
+
+  ctx.restore();                                     // globalAlpha も元の 1 に戻る
+}
+
+/* エサ：色ごとに1回のパスでまとめて塗る（粒が増えても fillStyle の切り替えが色の数だけで済む）。
+   消える直前の薄くなる粒だけ、別に1粒ずつ描く */
+function drawFood() {
+  if (!food.length) return;
+  const cols = CONFIG.FOOD_COLORS, sz = settings.foodSize;
+  const fadeStart = CONFIG.FOOD_LIFE - 4;
+  for (let c = 0; c < cols.length; c++) {
+    ctx.fillStyle = cols[c];
+    ctx.beginPath();
+    for (let i = 0; i < food.length; i++) {
+      const q = food[i];
+      if (q.c !== c || q.dead || q.age > fadeStart) continue;
+      const r = q.r * sz;
+      ctx.moveTo(q.x + r, q.y);
+      ctx.arc(q.x, q.y, r, 0, TAU);
+    }
+    ctx.fill();
+  }
+  for (let i = 0; i < food.length; i++) {          // 消える直前の粒（薄くなる）
+    const q = food[i];
+    if (q.dead || q.age <= fadeStart) continue;
+    ctx.globalAlpha = Math.max(0, (CONFIG.FOOD_LIFE - q.age) / 4);
+    ctx.fillStyle = cols[q.c];
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, q.r * sz, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawBubbles() {
+  const H = view.H, top = H * 0.08, dpr = view.dpr, last = bubbleMips.length - 1;
+  for (const b of bubbles) {
+    const fade = b.y < top ? Math.max(0, b.y / top) : 1; // 水面に近づくと消える
+    ctx.globalAlpha = b.a * fade;
+    const d = b.r * 2.29; // 泡の絵は余白があるので、少し大きめに描いて見た目の半径を b.r に合わせる
+    // 画面上の大きさ（実際の画素）以上で、いちばん小さい絵を選ぶ。64px→0、32px→1、16px→2、8px→3
+    const px = d * dpr;
+    let k = 0;
+    while (k < last && px <= 32 >> k) k++;
+    ctx.drawImage(bubbleMips[k], b.x - d / 2, b.y - d / 2, d, d);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* 泡が弾けた「パチン」：泡の輪がふっと広がって消え、小さなしずくが3つ飛ぶ */
+function drawPops() {
+  if (!pops.length) return;
+  const U = view.U, life = CONFIG.POP_LIFE;
+  ctx.strokeStyle = 'rgb(235,250,255)';
+  ctx.fillStyle = 'rgb(235,250,255)';
+  for (const p of pops) {
+    const t = p.age / life, rr = p.r * (1 + 1.6 * t);
+    ctx.globalAlpha = 0.9 * (1 - t);
+    ctx.lineWidth = U * (0.4 + 1.1 * (1 - t));
+    ctx.beginPath(); ctx.arc(p.x, p.y, rr, 0, TAU); ctx.stroke();
+    ctx.beginPath();
+    for (let k = 0; k < 3; k++) {
+      const a = p.ang + k * TAU / 3, d = p.r * 1.3 + U * 9 * t, dr = U * 0.9 * (1 - t) + 0.3;
+      const x = p.x + Math.cos(a) * d, y = p.y + Math.sin(a) * d;
+      ctx.moveTo(x + dr, y); ctx.arc(x, y, dr, 0, TAU);
+    }
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* 粒：色・濃さ・光はテーマで変わる。
+   粒は奥・中・手前の3グループに分け、グループごとにまとめて塗る（描画回数を減らす）。
+   glow が大きいテーマ（深海）では、粒のまわりにほのかな光を重ねて、ゆっくり明滅させる */
+function drawParticles() {
+  const glow = rt.glow;
+  if (glow > 0.02) {
+    for (const p of particles) {
+      ctx.globalAlpha = glow * (0.18 + 0.5 * (0.5 + 0.5 * Math.sin(p.ph * 1.6))) * (0.5 + 0.5 * p.z);
+      const d = p.r * 9;
+      ctx.drawImage(glowSprite, p.x - d / 2, p.y - d / 2, d, d);
+    }
+  }
+  const tw = (0.85 + 0.15 * Math.sin(simT * 1.7)) * rt.pA * (1 + glow * 0.5), alphas = [0.22, 0.38, 0.6];
+  ctx.fillStyle = `rgb(${rt.pR | 0},${rt.pG | 0},${rt.pB | 0})`;
+  for (let t = 0; t < 3; t++) {
+    ctx.globalAlpha = Math.min(1, alphas[t] * tw);
+    ctx.beginPath();
+    for (const p of particleTiers[t]) { ctx.moveTo(p.x + p.r, p.y); ctx.arc(p.x, p.y, p.r, 0, TAU); }
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* 波紋：3重の輪が、時間差でゆっくり広がって消える */
+function drawRipples() {
+  const U = view.U;
+  ctx.strokeStyle = 'rgb(225,247,255)';
+  ctx.fillStyle = 'rgb(235,250,255)';
+  for (const r of ripples) {
+    if (r.age < 0.35) {                              // 触れた瞬間のやわらかい光
+      ctx.globalAlpha = (1 - r.age / 0.35) * 0.25;
+      ctx.beginPath(); ctx.arc(r.x, r.y, U * (14 + r.age * 60), 0, TAU); ctx.fill();
+    }
+    for (let k = 0; k < 3; k++) {
+      const ar = r.age - k * 0.25;
+      if (ar <= 0) continue;
+      const t = ar / RIPPLE_LIFE;
+      if (t >= 1) continue;
+      ctx.globalAlpha = (1 - t) * (1 - t) * (0.6 - k * 0.14);
+      ctx.lineWidth = U * (2.6 * (1 - t) + 0.6);
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, U * rippleRadius(ar), 0, TAU);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ?fps を付けたときだけ出る、動作確認用の表示。
+   fps は約1.5秒ごとの平均なので、最初の計測が終わるまでは「--」。
+   work は1コマの計算＋描画の命令にかかった平均 ms（GPU で塗る時間は入らないので、目安）。
+   dpr は描画の細かさ、「rays off」は自動調整で光の筋を止めている印、「30fps cap」は「上限で止まっている」と判断した印 */
+let fpsNow = 0, workNow = 0;
+function drawFps() {
+  ctx.font = '12px monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText((fpsNow ? Math.round(fpsNow) : '--') + ' fps   work ' + (fpsNow ? workNow.toFixed(1) + 'ms' : '--') +
+               '   dpr ' + view.dpr, 10, 52);
+  ctx.fillText('fish ' + fishAll.length + '   bubbles ' + bubbles.length + (quality.raysOff ? '   rays off' : '') +
+               (simT - quality.cappedAt < CONFIG.CAP_RETRY_SEC ? '   30fps cap' : ''), 10, 68);
+}
+
+
+/* =====================================================================
+   10. メインループと自動品質調整
+   ===================================================================== */
+let lastTime = 0, accDt = 0, accWork = 0, accN = 0, lastAdjust = 0;
+const targetFps = () => (settings.powerSave ? CONFIG.POWER_SAVE_FPS : 60);
+function resetMonitor() { accDt = 0; accWork = 0; accN = 0; lastAdjust = simT; }
+
+/* 実際に描いたコマの間隔から fps を測り、目標の約75%（60fps なら45、省電力の30fps なら22.5）を下回ったら、1段ずつ軽くする。
+   raw = 前のコマからの秒数、work = このコマの計算と描画の命令にかかった ms（表示用） */
+function monitor(raw, work) {
+  if (raw > 0.25) return; // タブを切り替えて戻った直後などの大きな値は無視
+  accDt += raw; accWork += work; accN++;
+  const target = targetFps();
+  if (accN < target * 1.5) return;              // 約1.5秒ぶんたまったら判定
+  const avg = accDt / accN;
+  workNow = accWork / accN;
+  accDt = 0; accWork = 0; accN = 0;
+  const fps = fpsNow = 1 / avg;
+
+  // 60fps を狙っているのに30fps前後のとき、2つの場合がある：
+  //   ・iPhone の低電力モードで、Safari が30fpsに固定している → 軽くしても30fpsのまま。見た目を落とすだけ損
+  //   ・端末の力が足りず、1コマおきにしか描けていない → 軽くすれば、30fpsより上に戻る
+  // fps の数字（どちらも約33ms間隔）でも、JavaScript の処理時間（GPU で塗る時間が入らない）でも見分けられない。
+  // そこで、見た目への影響が小さい段（細かさ・光の筋）を1段だけ試しに下げ、次の計測で30fps前後から抜けたか確かめる。
+  // 抜けなければ「上限で止まっている」とみなして試した段を元に戻し、CAP_RETRY_SEC 秒は試さない。魚はこの帯では減らさない
+  const inCapBand = target > 40 && fps > 26 && fps < 36;
+  if (quality.probe) {
+    const undo = quality.probe;
+    quality.probe = null;
+    if (inCapBand) { undo(); quality.cappedAt = simT; lastAdjust = simT; return; }
+  }
+  if (!CONFIG.AUTO_QUALITY || fps >= target * 0.75 || simT - lastAdjust <= 2) return;
+  if (inCapBand) {
+    if (simT - quality.cappedAt < CONFIG.CAP_RETRY_SEC) return;
+    const undo = degrade(true);
+    if (undo) { quality.probe = undo; lastAdjust = simT; }
+    return;
+  }
+  if (degrade(false)) lastAdjust = simT;
+}
+
+/* 1段だけ軽くする。順番は、見た目が変わりにくいものから：
+   1) 描画の細かさ（DPR）を AUTO_DPR へ  2) 光の筋を止める  3) 魚を1割減らす（MIN_FISH_COUNT まで）
+   どれもこの回だけ（保存しない）。魚の数はパネルのスライダーはそのままで、「いまはN匹」と出る。
+   noFish=true のときは 1) 2) だけ。戻り値は、その段を元に戻す関数（軽くできなければ null） */
+function degrade(noFish) {
+  if (Math.min(window.devicePixelRatio || 1, quality.dprCap) > CONFIG.AUTO_DPR) {
+    if (themeT < 1) return null;                 // テーマの色が移り変わっている途中なら、終わるのを待つ（作り直すと移り変わりが途切れるため）
+    const prev = quality.dprCap;
+    quality.dprCap = CONFIG.AUTO_DPR;
+    resize();                                    // キャンバスと背景を新しい細かさで作り直す
+    return () => { quality.dprCap = prev; resize(); };
+  }
+  if (!quality.raysOff && rt.rayMul * settings.rayStrength >= 0.005) {
+    quality.raysOff = true;
+    return () => { quality.raysOff = false; };
+  }
+  const n = fishTarget();
+  if (!noFish && n > CONFIG.MIN_FISH_COUNT) {
+    quality.fishCap = Math.max(CONFIG.MIN_FISH_COUNT, Math.min(n - 2, Math.round(n * 0.9)));
+    setFishCount(fishTarget());
+    ui.sync('fishCount');
+    return () => { quality.fishCap = n; setFishCount(fishTarget()); ui.sync('fishCount'); };
+  }
+  return null;
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  // 省電力のときは、前に描いてから約1/30秒たつまで何もしない（計算も描画も休む）。
+  // 4ms の余裕は、コマの届く時刻のぶれで 1コマ飛ばしすぎないため。もともと30fpsの環境（低電力モード）では毎コマ描く
+  if (settings.powerSave && lastTime && now - lastTime < 1000 / CONFIG.POWER_SAVE_FPS - 4) return;
+  const raw = lastTime ? (now - lastTime) / 1000 : 1 / 60;
+  lastTime = now;
+  if (!worldReady) return;
+  const t0 = performance.now();
+  update(Math.min(raw, 0.05)); // 1コマが長すぎても、世界が飛ばないよう上限をかける
+  draw();
+  monitor(raw, performance.now() - t0);
+}
+
+
+/* =====================================================================
+   11. 設定パネル
+   画面の構成（タブ・スライダー・ボタン）は SCHEMA から作る。
+   スライダーを動かすと settings を書き換えて applySetting() で即座に反映し、localStorage に保存する。
+   ===================================================================== */
+
+/* settings の key が変わったとき、すでに動いている世界へ反映する。
+   速さ・逃げる強さ・泡の量などは毎フレーム settings を読んでいるので、ここでは何もしなくてよい */
+function applySetting(key) {
+  switch (key) {
+    // ユーザーが魚の数・光の筋を変えたら、自動調整で下げていた分は解除して、ユーザーの選んだ値どおりにする
+    case 'fishCount':     quality.fishCap = Infinity; setFishCount(fishTarget()); break;
+    case 'rayStrength':   quality.raysOff = false; break;
+    case 'bubbleLimit':   trimBubbles(); break;
+    case 'particleCount': setParticleCount(settings.particleCount); break;
+    case 'theme':
+    case 'decor':         applyBackdrop(false); break;
+    case 'powerSave':     resetMonitor(); quality.probe = null; break;   // 目標の fps が変わるので、測り直す
+  }
+}
+
+const ui = (() => {
+  const $ = (id) => document.getElementById(id);
+  const gear = $('gear'), scrim = $('scrim'), panel = $('panel'), tabsEl = $('tabs'), panesEl = $('panes'), resetBtn = $('reset');
+  const basicEl = $('basic'), moreBtn = $('more'), advEl = $('adv'), bodyEl = $('body'), grab = $('grab');
+  const painters = {};   // key → その項目の表示を settings に合わせ直す関数
+  const tabs = [], panes = [];
+  let isOpen = false;
+
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text) e.textContent = text;
+    return e;
+  };
+
+  /* 項目 1 つぶんの部品を作る */
+  function buildControl(it) {
+    const row = el('div', 'row');
+    if (it.type === 'range') {
+      const head = el('div', 'head'), val = el('span', 'val');
+      head.append(el('span', '', it.label), val);
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = it.min; input.max = it.max; input.step = it.step;
+      input.setAttribute('aria-label', it.label);
+      const paint = () => {
+        const v = settings[it.key];
+        input.value = v;
+        val.textContent = it.fmt(v);
+        input.style.setProperty('--p', ((v - it.min) / (it.max - it.min) * 100) + '%'); // つまみの左側を色付け
+      };
+      input.addEventListener('input', () => {        // 動かしている間も、即座に反映する
+        const v = parseFloat(input.value);
+        if (!isFinite(v)) return;
+        settings[it.key] = v;
+        applySetting(it.key);                        // 先に反映（魚の数なら、自動調整の上限の解除）してから表示を合わせる
+        paint();
+        saveSettings();
+      });
+      painters[it.key] = paint;
+      paint();
+      row.append(head, input);
+    } else if (it.type === 'theme') {
+      row.append(el('div', 'head', it.label));
+      const grid = el('div', 'chips'), chips = {};
+      Object.keys(THEMES).forEach((id) => {
+        const t = THEMES[id], b = el('button', 'chip', t.label);
+        b.type = 'button';
+        b.style.background = `linear-gradient(160deg, ${t.sea[0]}, ${t.sea[2]} 55%, ${t.sea[4]})`; // テーマの水の色をボタンに
+        b.addEventListener('click', () => {
+          settings.theme = id;
+          painters.theme();
+          applySetting('theme');
+          saveSettings();
+        });
+        chips[id] = b;
+        grid.append(b);
+      });
+      painters.theme = () => {
+        for (const id in chips) {
+          chips[id].classList.toggle('on', id === settings.theme);
+          chips[id].setAttribute('aria-pressed', id === settings.theme);
+        }
+      };
+      painters.theme();
+      row.append(grid);
+    } else if (it.type === 'toggle') {
+      row.className = 'row switchrow';
+      const sw = el('button', 'sw');
+      sw.type = 'button';
+      sw.setAttribute('role', 'switch');
+      sw.setAttribute('aria-label', it.label);
+      sw.addEventListener('click', () => {
+        settings[it.key] = !settings[it.key];
+        painters[it.key]();
+        applySetting(it.key);
+        saveSettings();
+      });
+      painters[it.key] = () => sw.setAttribute('aria-checked', settings[it.key] ? 'true' : 'false');
+      painters[it.key]();
+      row.append(el('span', '', it.label), sw);
+    }
+    return row;
+  }
+
+  function selectTab(i) {
+    tabs.forEach((t, k) => { t.classList.toggle('on', k === i); t.setAttribute('aria-selected', k === i); });
+    panes.forEach((p, k) => p.classList.toggle('on', k === i));
+  }
+
+  function setOpen(v) {
+    isOpen = v;
+    panel.classList.toggle('open', v);
+    scrim.classList.toggle('open', v);
+    gear.classList.toggle('open', v);
+    gear.setAttribute('aria-expanded', v);
+    panel.setAttribute('aria-hidden', !v);
+    if (v) { cancelPointers(); hideHint(); }          // 触れたままだった指のエサ・泡は止める
+    else flushSettings();                              // 閉じるときに、確実に保存しておく
+  }
+
+  /* 基本：SCHEMA で basic: true の項目（魚の数・テーマ）を、パネルの上に並べる */
+  SCHEMA.forEach((group) => group.items.forEach((it) => { if (it.basic) basicEl.append(buildControl(it)); }));
+
+  /* 詳細設定：basic でない項目を、今までどおりのタブ構成で並べる（項目が残らないタブは作らない） */
+  SCHEMA.map((g) => ({ tab: g.tab, items: g.items.filter((it) => !it.basic) }))
+    .filter((g) => g.items.length)
+    .forEach((group, gi) => {
+      const tab = el('button', 'tab', group.tab);
+      tab.type = 'button';
+      tab.setAttribute('role', 'tab');
+      tab.addEventListener('click', () => selectTab(gi));
+      tabsEl.append(tab); tabs.push(tab);
+
+      const pane = el('div', 'pane');
+      pane.setAttribute('role', 'tabpanel');
+      group.items.forEach((it) => pane.append(buildControl(it)));
+      panesEl.append(pane); panes.push(pane);
+    });
+  selectTab(0);
+
+  /* 「詳細設定」の開閉。開いたら、中身が見えるところまで少しスクロールする */
+  moreBtn.addEventListener('click', () => {
+    const v = advEl.hidden;
+    advEl.hidden = !v;
+    moreBtn.setAttribute('aria-expanded', v);
+    if (v) {
+      const b = bodyEl.getBoundingClientRect(), m = moreBtn.getBoundingClientRect(), a = advEl.getBoundingClientRect();
+      const dy = Math.min(m.top - b.top - 8, a.bottom - b.bottom);   // 詳細設定のボタンを上端に寄せるか、下端が見えるところまで
+      if (dy > 0) bodyEl.scrollTo({ top: bodyEl.scrollTop + dy, behavior: 'smooth' });
+    }
+  });
+
+  /* ---- グラブ：上のバーを下へスワイプして閉じる ----
+     指に追従してパネルが下がる。離したとき、一定以上（高さの3割か110px の小さいほう）下がっていたか、
+     素早く下へはじいていたら閉じる。足りなければ元の位置へ戻る。
+     グラブ上の操作は canvas に届かない（#ui の中なので、ゲーム側の pointer イベントは起きない） */
+  let drag = null;
+  grab.addEventListener('pointerdown', (e) => {
+    if (!isOpen || drag) return;
+    e.preventDefault();
+    try { grab.setPointerCapture(e.pointerId); } catch (_) {}
+    drag = { id: e.pointerId, y0: e.clientY, dy: 0, lastY: e.clientY, lastT: performance.now(), v: 0 };
+    panel.classList.add('dragging');                       // 追従中は、アニメーションを切る
+  });
+  grab.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const now = performance.now(), dt = now - drag.lastT;
+    if (dt > 0) drag.v = drag.v * 0.5 + (e.clientY - drag.lastY) / dt * 0.5;   // 下向きの速さ（px/ms）をなだらかに
+    drag.lastY = e.clientY; drag.lastT = now;
+    drag.dy = Math.max(0, e.clientY - drag.y0);            // 上へは動かさない
+    panel.style.transform = `translateY(${drag.dy}px)`;
+  });
+  function endDrag(e, cancelled) {
+    if (!drag || e.pointerId !== drag.id) return;
+    const d = drag, h = panel.offsetHeight;
+    drag = null;
+    panel.getBoundingClientRect();                         // いまの位置を確定させてから、アニメーションを戻す
+    panel.classList.remove('dragging');
+    panel.style.transform = '';                            // 戻す or 閉じる、どちらもここから滑らかに動く
+    if (!cancelled && (d.dy > Math.min(110, h * 0.3) || (d.v > 0.6 && d.dy > 24))) setOpen(false);
+  }
+  grab.addEventListener('pointerup', (e) => endDrag(e, false));
+  grab.addEventListener('pointercancel', (e) => endDrag(e, true));
+
+  gear.addEventListener('click', () => setOpen(!isOpen));   // 歯車をもう一度タップで閉じる
+  scrim.addEventListener('click', () => setOpen(false));    // 外側をタップで閉じる
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && isOpen) setOpen(false); });
+
+  /* 「初期値に戻す」：すべての設定を初期値にして、世界へ反映し、保存も消す */
+  resetBtn.addEventListener('click', () => {
+    Object.assign(settings, defaultSettings());
+    Object.keys(settings).forEach(applySetting);
+    Object.values(painters).forEach((p) => p());
+    clearTimeout(saveTimer);
+    try { localStorage.removeItem(SETTINGS_KEY); } catch (_) {}
+  });
+
+  return {
+    sync: (key) => { if (key) { if (painters[key]) painters[key](); } else Object.values(painters).forEach((p) => p()); },
+    setOpen,
+  };
+})();
+
+
+/* =====================================================================
+   12. 起動
+   ===================================================================== */
+buildRaySprite(raySprite, [215, 247, 255]);
+buildRaySprite(rayWarmSprite, [255, 214, 160]);
+buildBubbleSprite();
+buildGlowSprite();
+
+function initWorld() {
+  createFish();
+  setParticleCount(settings.particleCount);
+  createRays();
+  createSeaweed();
+  for (let i = 0; i < 18; i++) spawnAmbientBubble();   // 最初から泡が浮かんでいる状態にする
+  bubbles.forEach(b => { b.y = rand(0, view.H); });
+}
+resize();                       // 画面サイズを測って、背景と世界を作る（サイズが取れなければ後で作る）
+
+if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas);
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+
+// ヒントは少し待ってから静かに表示し、10秒たつか触れたら消す
+setTimeout(() => { if (!hintDone) hintEl.classList.add('show'); }, 1200);
+setTimeout(hideHint, 10000);
+
+// ?debug を付けたときだけ、ブラウザのコンソールから中身を覗ける
+if (params.has('debug')) {
+  window.__ocean = {
+    CONFIG, THEMES, settings, view, quality, degrade, fishAll, schools, bubbles, bubblePool, particles, food, foodPool, ripples, pops, pointers,
+    addRipple, spawnFood, spawnBubble, rippleRadius, rippleArrival, applySetting, update, draw, ui,
+    theme: () => ({ themeT, themeEase, rt, curKey, oldBackdrop: [bgFrom.width, bgFrom.height, fgFrom.width, fgFrom.height] }),
+  };
+}
+
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
