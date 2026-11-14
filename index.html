@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Ocean Tap</title>
+<meta name="description" content="海の中を泳ぐ魚の群れを眺めながら、タップ・長押し・なぞる操作でちょっかいを出すだけのブラウザゲーム。目標も点数もないので、何も考えずに暇つぶししたいときに。">
 
 <!-- ====== スマホ表示まわり ======
      ピンチ拡大を禁止し、ノッチの裏まで画面いっぱいに使う（viewport-fit=cover） -->
@@ -237,6 +238,12 @@
   .sw[aria-checked="true"] { background: #4cc9f0; }
   .sw[aria-checked="true"]::after { transform: translateX(22px); }
 
+  /* このゲームについて（パネルの一番下） */
+  .about { margin-top: 18px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.15); font-size: 13px; line-height: 1.6; color: rgba(255, 255, 255, 0.75); }
+  .about h2 { margin: 0 0 4px; font-size: 14px; color: #fff; }
+  .about p { margin: 0 0 6px; }
+  .about ul { margin: 0 0 6px; padding-left: 1.2em; }
+
   .reset {
     width: 100%; height: 48px; margin-top: 10px;
     border-radius: 12px;
@@ -272,6 +279,17 @@
         <div id="tabs" role="tablist"></div>
         <div id="panes"></div>
         <button id="reset" class="reset" type="button">初期値に戻す</button>
+      </div>
+      <!-- このゲームについて -->
+      <div class="about">
+        <h2>Ocean Tap について</h2>
+        <p>海の中を泳ぐ魚の群れを眺めながら、指でちょっかいを出すだけのゲームです。目標も点数もないので、何も考えずに暇つぶししたいときにどうぞ。</p>
+        <ul>
+          <li>タップ：波紋が広がり、魚が驚いて逃げる。近くの泡は弾ける</li>
+          <li>長押し：エサが落ち、魚が集まって食べる</li>
+          <li>なぞる：泡が出て、魚が泡をよけて泳ぐ</li>
+        </ul>
+        <p>iPhone の Safari で「ホーム画面に追加」すると、全画面で遊べます。</p>
       </div>
     </div>
   </section>
